@@ -66,10 +66,6 @@ where
     let value = Option::<String>::deserialize(deserializer)?;
     Ok(value.and_then(|value| {
         let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(value)
-        }
+        if trimmed.is_empty() { None } else { Some(value) }
     }))
 }
