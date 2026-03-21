@@ -1,6 +1,6 @@
 use crate::core::{
     arweave::{
-        ArweaveWindow, SettledNotice, SettlementMetadata,
+        ArweaveWindow, SettledNotice, SettlementMetadata, fetch_arweave_window,
         fetch_settled_notices_by_block_and_correlation, fetch_settlement_metadata_for_edges,
     },
     constants::AO_TOKEN_SYMBOL,
@@ -33,6 +33,13 @@ pub struct TokenTransferRecord {
     pub transfer: TokenMessageRecord,
     pub credit_notices: Vec<TokenMessageRecord>,
     pub debit_notices: Vec<TokenMessageRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenTransferWithNoticesResponse {
+    pub transfer: HistoryNode,
+    pub credit_notices: Vec<HistoryNode>,
+    pub debit_notices: Vec<HistoryNode>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,6 +133,92 @@ pub async fn fetch_ao_token_transfers(
         transfer_count,
         arweave_window: page.arweave_window,
         transfers,
+    })
+}
+
+pub async fn fetch_ao_token_transfer_with_notices(
+    client: &Client,
+    config: &AppConfig,
+    message_id: &str,
+    notice_scan_blocks: u64,
+) -> Result<TokenTransferWithNoticesResponse> {
+    let transfer =
+        su::fetch_message_node(client, &config.su_url, &config.ao_token_process_id, message_id)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed fetching transfer message {message_id} for process {}",
+                    config.ao_token_process_id
+                )
+            })?;
+
+    let transfer_message = transfer
+        .message
+        .as_ref()
+        .context("encountered a transfer response without a message payload")?;
+    if !is_transfer_message(transfer_message) {
+        anyhow::bail!("message {message_id} is not a Transfer");
+    }
+
+    let block_height = transfer
+        .assignment
+        .block_height()
+        .context("transfer is missing assignment Block-Height")?;
+    let arweave_window = fetch_arweave_window(client, &config.arweave_url, block_height).await?;
+    let end_block_height = normalize_block_height(block_height)
+        .parse::<u64>()
+        .context("transfer assignment Block-Height is not an integer")?
+        .saturating_add(notice_scan_blocks);
+    let end_arweave_window =
+        fetch_arweave_window(client, &config.arweave_url, &end_block_height.to_string()).await?;
+    let from_timestamp_ms =
+        assignment_timestamp_value(&transfer.assignment).unwrap_or(arweave_window.from_timestamp_ms);
+    let to_timestamp_ms = end_arweave_window.to_timestamp_ms.or(arweave_window.to_timestamp_ms);
+
+    let mut credit_notices = Vec::new();
+    let mut debit_notices = Vec::new();
+    let transfer_correlation_id = notice_correlation_id(transfer_message).to_string();
+
+    for candidate_process_id in
+        collect_notice_process_ids(&config.ao_token_process_id, transfer_message)
+    {
+        let candidate_edges = su::fetch_process_edges_for_window(
+            client,
+            &config.su_url,
+            &candidate_process_id,
+            from_timestamp_ms,
+            to_timestamp_ms,
+            config.page_size,
+        )
+        .await
+        .with_context(|| {
+            format!("failed fetching candidate notice history for process {candidate_process_id}")
+        })?
+        .edges;
+
+        for candidate_edge in candidate_edges {
+            let Some(candidate_message) = candidate_edge.node.message.as_ref() else {
+                continue;
+            };
+            if notice_correlation_id(candidate_message) != transfer_correlation_id.as_str() {
+                continue;
+            }
+
+            let Some(action) = candidate_message.tag_value("Action") else {
+                continue;
+            };
+            if action.eq_ignore_ascii_case("Credit-Notice") {
+                credit_notices.push(candidate_edge.node);
+            } else if action.eq_ignore_ascii_case("Debit-Notice") {
+                debit_notices.push(candidate_edge.node);
+            }
+        }
+    }
+
+    Ok(TokenTransferWithNoticesResponse {
+        transfer,
+        credit_notices: dedupe_history_nodes_by_message_id(credit_notices),
+        debit_notices: dedupe_history_nodes_by_message_id(debit_notices),
     })
 }
 
@@ -400,6 +493,22 @@ fn dedupe_edges_by_message_id(edges: Vec<HistoryEdge>) -> Vec<HistoryEdge> {
         };
         if seen.insert(message_id.to_string()) {
             deduped.push(edge);
+        }
+    }
+
+    deduped
+}
+
+fn dedupe_history_nodes_by_message_id(nodes: Vec<HistoryNode>) -> Vec<HistoryNode> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+
+    for node in nodes {
+        let Some(message_id) = node.message.as_ref().map(|message| message.id.as_str()) else {
+            continue;
+        };
+        if seen.insert(message_id.to_string()) {
+            deduped.push(node);
         }
     }
 

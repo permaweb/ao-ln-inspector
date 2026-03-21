@@ -4,12 +4,12 @@ use crate::core::{
         DEFAULT_PAGE_SIZE, DEFAULT_SU_URL, NETWORK_VERSION,
     },
     su,
-    token::fetch_ao_token_transfers,
+    token::{fetch_ao_token_transfer_with_notices, fetch_ao_token_transfers},
 };
 use anyhow::{Context, Result, bail};
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
 };
 use reqwest::Client;
@@ -44,6 +44,12 @@ pub struct MessageIdPath {
     id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TransferQuery {
+    #[serde(default, alias = "notice-scan-blocks")]
+    notice_scan_blocks: Option<u64>,
+}
+
 pub fn app_state_from_env() -> Result<AppState> {
     Ok(AppState { client: Client::new(), config: app_config_from_env()? })
 }
@@ -56,7 +62,8 @@ pub async fn handle_route() -> Json<Value> {
         "routes": [
             "/",
             "/v1/token/ao/transfers/{block_id}",
-            "/v1/token/ao/msg/{id}"
+            "/v1/token/ao/msg/{id}",
+            "/v1/token/ao/transfer/{id}"
         ],
         "config": {
             "su_url": DEFAULT_SU_URL,
@@ -89,6 +96,22 @@ pub async fn handle_ao_token_message(
         &state.config.ao_token_process_id,
         &id,
     )
+    .await
+    .map(Json)
+    .map_err(into_http_error)
+}
+
+pub async fn handle_ao_token_transfer(
+    State(state): State<AppState>,
+    Path(MessageIdPath { id }): Path<MessageIdPath>,
+    Query(TransferQuery { notice_scan_blocks }): Query<TransferQuery>,
+) -> Result<Json<crate::core::token::TokenTransferWithNoticesResponse>, (StatusCode, Json<Value>)> {
+    fetch_ao_token_transfer_with_notices(
+        &state.client,
+        &state.config,
+        &id,
+        notice_scan_blocks.unwrap_or(1),
+    )
         .await
         .map(Json)
         .map_err(into_http_error)
@@ -96,7 +119,9 @@ pub async fn handle_ao_token_message(
 
 fn into_http_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
     let message = format_error_chain(&error);
-    let status = if message.contains("block-height must be an integer") {
+    let status = if message.contains("block-height must be an integer")
+        || message.contains("is not a Transfer")
+    {
         StatusCode::BAD_REQUEST
     } else {
         StatusCode::BAD_GATEWAY

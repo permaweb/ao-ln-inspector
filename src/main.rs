@@ -1,8 +1,8 @@
 use ao_ln_inspector::core::{
     constants::SERVER_HOST,
     server::{
-        SERVER_PORT, app_state_from_env, handle_ao_token_message, handle_ao_token_transfers,
-        handle_route,
+        SERVER_PORT, app_state_from_env, handle_ao_token_message, handle_ao_token_transfer,
+        handle_ao_token_transfers, handle_route,
     },
 };
 use axum::{Router, routing::get};
@@ -24,6 +24,7 @@ async fn main() {
         .route("/", get(handle_route))
         .route("/v1/token/ao/transfers/{block_id}", get(handle_ao_token_transfers))
         .route("/v1/token/ao/msg/{id}", get(handle_ao_token_message))
+        .route("/v1/token/ao/transfer/{id}", get(handle_ao_token_transfer))
         .with_state(state)
         .layer(cors);
 

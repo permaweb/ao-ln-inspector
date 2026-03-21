@@ -1,10 +1,11 @@
 use crate::core::{
     arweave::{ArweaveWindow, fetch_arweave_window},
-    types::{HistoryEdge, ProcessHistoryResponse},
+    types::{HistoryEdge, HistoryNode, ProcessHistoryResponse},
 };
 use anyhow::{Context, Result, bail};
 use reqwest::{Client, Url};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 #[derive(Debug)]
@@ -64,6 +65,24 @@ pub async fn fetch_message_value(
     process_id: &str,
     message_id: &str,
 ) -> Result<Value> {
+    fetch_message_json(client, base_url, process_id, message_id).await
+}
+
+pub async fn fetch_message_node(
+    client: &Client,
+    base_url: &str,
+    process_id: &str,
+    message_id: &str,
+) -> Result<HistoryNode> {
+    fetch_message_json(client, base_url, process_id, message_id).await
+}
+
+async fn fetch_message_json<T: DeserializeOwned>(
+    client: &Client,
+    base_url: &str,
+    process_id: &str,
+    message_id: &str,
+) -> Result<T> {
     let url = message_url(base_url, process_id, message_id)?;
     let response = client.get(url).send().await.context("failed to contact SU")?;
 
@@ -76,7 +95,7 @@ pub async fn fetch_message_value(
         bail!("SU returned {}: {}", status, detail.trim());
     }
 
-    response.json::<Value>().await.context("failed to deserialize SU response")
+    response.json::<T>().await.context("failed to deserialize SU response")
 }
 
 pub async fn fetch_process_edges_for_window(
