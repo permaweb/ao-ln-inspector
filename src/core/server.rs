@@ -3,6 +3,7 @@ use crate::core::{
         APP_NAME, DEFAULT_AO_TOKEN_PROCESS_ID, DEFAULT_ARWEAVE_URL, DEFAULT_GQL_URL,
         DEFAULT_PAGE_SIZE, DEFAULT_SU_URL, NETWORK_VERSION,
     },
+    su,
     token::fetch_ao_token_transfers,
 };
 use anyhow::{Context, Result, bail};
@@ -38,6 +39,11 @@ pub struct BlockIdPath {
     block_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct MessageIdPath {
+    id: String,
+}
+
 pub fn app_state_from_env() -> Result<AppState> {
     Ok(AppState { client: Client::new(), config: app_config_from_env()? })
 }
@@ -49,7 +55,8 @@ pub async fn handle_route() -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "routes": [
             "/",
-            "/v1/token/ao/transfers/{block_id}"
+            "/v1/token/ao/transfers/{block_id}",
+            "/v1/token/ao/msg/{id}"
         ],
         "config": {
             "su_url": DEFAULT_SU_URL,
@@ -67,6 +74,21 @@ pub async fn handle_ao_token_transfers(
     Path(BlockIdPath { block_id }): Path<BlockIdPath>,
 ) -> Result<Json<crate::core::token::TokenTransfersResponse>, (StatusCode, Json<Value>)> {
     fetch_ao_token_transfers(&state.client, &state.config, &block_id)
+        .await
+        .map(Json)
+        .map_err(into_http_error)
+}
+
+pub async fn handle_ao_token_message(
+    State(state): State<AppState>,
+    Path(MessageIdPath { id }): Path<MessageIdPath>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    su::fetch_message_value(
+        &state.client,
+        &state.config.su_url,
+        &state.config.ao_token_process_id,
+        &id,
+    )
         .await
         .map(Json)
         .map_err(into_http_error)
