@@ -1,6 +1,7 @@
 use crate::core::{
     constants::{
-        GQL_BATCH_SIZE, GQL_NOTICE_BATCH_SIZE, SETTLED_NOTICES_QUERY, SETTLEMENT_HEIGHTS_QUERY,
+        AO_LN_AUTHORITY, GQL_BATCH_SIZE, GQL_NOTICE_BATCH_SIZE, SETTLED_NOTICES_QUERY,
+        SETTLEMENT_HEIGHTS_QUERY,
     },
     types::{HistoryEdge, normalize_block_height},
 };
@@ -30,6 +31,7 @@ pub struct SettledNotice {
     pub message_id: String,
     pub action: String,
     pub correlation_id: String,
+    pub owner_address: String,
     pub settlement_block_height: Option<u64>,
     pub bundled_in_id: Option<String>,
     pub recipient: Option<String>,
@@ -118,11 +120,17 @@ struct NoticeGraphQlEdge {
 #[derive(Debug, Deserialize)]
 struct NoticeGraphQlNode {
     id: String,
+    owner: NoticeGraphQlOwner,
     recipient: Option<String>,
     tags: Vec<crate::core::types::Tag>,
     block: Option<GraphQlBlock>,
     #[serde(rename = "bundledIn")]
     bundled_in: Option<GraphQlBundledIn>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NoticeGraphQlOwner {
+    address: String,
 }
 
 pub async fn fetch_arweave_window(
@@ -221,6 +229,9 @@ pub async fn fetch_settled_notices_by_block_and_correlation(
             let mut last_cursor = None::<String>;
             for edge in data.transactions.edges {
                 last_cursor = Some(edge.cursor.clone());
+                if !edge.node.owner.address.eq_ignore_ascii_case(AO_LN_AUTHORITY) {
+                    continue;
+                }
                 let Some(correlation_id) = tag_value(&edge.node.tags, "Pushed-For") else {
                     continue;
                 };
@@ -237,6 +248,7 @@ pub async fn fetch_settled_notices_by_block_and_correlation(
                     message_id: edge.node.id,
                     action: action.to_string(),
                     correlation_id: correlation_id.to_string(),
+                    owner_address: edge.node.owner.address,
                     settlement_block_height: edge.node.block.map(|block| block.height),
                     bundled_in_id: edge.node.bundled_in.map(|bundle| bundle.id),
                     recipient: edge.node.recipient,

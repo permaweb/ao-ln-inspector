@@ -5,6 +5,7 @@ pub const DEFAULT_SU_URL: &str = "https://su-router.ao-testnet.xyz";
 pub const DEFAULT_ARWEAVE_URL: &str = "https://arweave.net";
 pub const DEFAULT_GQL_URL: &str = "https://arweave.net/graphql";
 pub const DEFAULT_AO_TOKEN_PROCESS_ID: &str = "0syT13r0s0tgPmIed95bJnuSqaD29HQNN8D3ElLSrsc";
+pub const AO_LN_AUTHORITY: &str = "fcoN_xJeisVsPXA-trzVAuIiqO3ydLQxM-L4XbrQKzY";
 pub const DEFAULT_PAGE_SIZE: usize = 100;
 pub const NETWORK_VERSION: &str = "ao.TN.1";
 

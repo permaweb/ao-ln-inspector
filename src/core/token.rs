@@ -3,7 +3,7 @@ use crate::core::{
         ArweaveWindow, SettledNotice, SettlementMetadata, fetch_arweave_window,
         fetch_settled_notices_by_block_and_correlation, fetch_settlement_metadata_for_edges,
     },
-    constants::AO_TOKEN_SYMBOL,
+    constants::{AO_LN_AUTHORITY, AO_TOKEN_SYMBOL},
     server::AppConfig,
     su,
     types::{AoMessage, Assignment, HistoryEdge, HistoryNode, Tag, normalize_block_height},
@@ -200,6 +200,9 @@ pub async fn fetch_ao_token_transfer_with_notices(
             let Some(candidate_message) = candidate_edge.node.message.as_ref() else {
                 continue;
             };
+            if !candidate_message.owner.address.eq_ignore_ascii_case(AO_LN_AUTHORITY) {
+                continue;
+            }
             if notice_correlation_id(candidate_message) != transfer_correlation_id.as_str() {
                 continue;
             }
@@ -348,6 +351,9 @@ async fn fetch_related_notice_edges_from_su(
                 let Some(candidate_message) = candidate_edge.node.message.as_ref() else {
                     continue;
                 };
+                if !candidate_message.owner.address.eq_ignore_ascii_case(AO_LN_AUTHORITY) {
+                    continue;
+                }
                 if notice_correlation_id(candidate_message) != transfer_correlation_id.as_str() {
                     continue;
                 }
