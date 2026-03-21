@@ -5,6 +5,7 @@ use crate::core::{
 use anyhow::{Context, Result, bail};
 use reqwest::{Client, Url};
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Debug)]
 pub struct ProcessEdgesPage {
@@ -55,6 +56,27 @@ pub async fn fetch_process_edges_for_assignment_block(
         .collect();
 
     Ok(AssignmentBlockEdges { page_count: process_page.page_count, edges, arweave_window })
+}
+
+pub async fn fetch_message_value(
+    client: &Client,
+    base_url: &str,
+    process_id: &str,
+    message_id: &str,
+) -> Result<Value> {
+    let url = message_url(base_url, process_id, message_id)?;
+    let response = client.get(url).send().await.context("failed to contact SU")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let su_error =
+            serde_json::from_str::<SuErrorEnvelope>(&body).ok().and_then(|envelope| envelope.error);
+        let detail = su_error.unwrap_or(body);
+        bail!("SU returned {}: {}", status, detail.trim());
+    }
+
+    response.json::<Value>().await.context("failed to deserialize SU response")
 }
 
 pub async fn fetch_process_edges_for_window(
@@ -158,6 +180,18 @@ fn process_history_url(
         if let Some(to) = to {
             query.append_pair("to", &to.to_string());
         }
+    }
+
+    Ok(url)
+}
+
+fn message_url(base_url: &str, process_id: &str, message_id: &str) -> Result<Url> {
+    let mut url = Url::parse(&format!("{}/{}", base_url.trim_end_matches('/'), message_id))
+        .context("invalid SU base URL")?;
+
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("process-id", process_id);
     }
 
     Ok(url)
