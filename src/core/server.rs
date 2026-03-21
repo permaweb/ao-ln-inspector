@@ -1,7 +1,7 @@
 use crate::core::{
     constants::{
         APP_NAME, DEFAULT_AO_TOKEN_PROCESS_ID, DEFAULT_ARWEAVE_URL, DEFAULT_GQL_URL,
-        DEFAULT_PAGE_SIZE, DEFAULT_SU_URL
+        DEFAULT_PAGE_SIZE, DEFAULT_SU_URL, NETWORK_VERSION
     },
     token::fetch_ao_token_transfers,
 };
@@ -49,7 +49,7 @@ pub async fn handle_route() -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "routes": [
             "/",
-            "/v1/token/ao/transfers/{blockheight}"
+            "/v1/token/ao/transfers/{block_id}"
         ],
         "config": {
             "su_url": DEFAULT_SU_URL,
@@ -57,7 +57,7 @@ pub async fn handle_route() -> Json<Value> {
             "gql_url": DEFAULT_GQL_URL,
             "ao_token_process_id": DEFAULT_AO_TOKEN_PROCESS_ID,
             "page_size": DEFAULT_PAGE_SIZE,
-            "network": "ao.TN.1"
+            "network": NETWORK_VERSION
         }
     }))
 }

@@ -26,7 +26,7 @@ struct SuErrorEnvelope {
 
 pub async fn fetch_process_edges_for_assignment_block(
     client: &Client,
-    base_url: &str,
+    su_url: &str,
     arweave_url: &str,
     process_id: &str,
     block_height: &str,
@@ -35,7 +35,7 @@ pub async fn fetch_process_edges_for_assignment_block(
     let arweave_window = fetch_arweave_window(client, arweave_url, block_height).await?;
     let process_page = fetch_process_edges_for_window(
         client,
-        base_url,
+        su_url,
         process_id,
         arweave_window.from_timestamp_ms,
         arweave_window.to_timestamp_ms,
