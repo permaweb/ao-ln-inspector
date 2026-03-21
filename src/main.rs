@@ -1,5 +1,5 @@
 use ao_ln_inspector::core::{
-    constants::{SERVER_HOST},
+    constants::SERVER_HOST,
     server::{SERVER_PORT, app_state_from_env, handle_ao_token_transfers, handle_route},
 };
 use axum::{Router, routing::get};

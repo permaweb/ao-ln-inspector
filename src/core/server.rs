@@ -1,7 +1,7 @@
 use crate::core::{
     constants::{
         APP_NAME, DEFAULT_AO_TOKEN_PROCESS_ID, DEFAULT_ARWEAVE_URL, DEFAULT_GQL_URL,
-        DEFAULT_PAGE_SIZE, DEFAULT_SU_URL, NETWORK_VERSION
+        DEFAULT_PAGE_SIZE, DEFAULT_SU_URL, NETWORK_VERSION,
     },
     token::fetch_ao_token_transfers,
 };
