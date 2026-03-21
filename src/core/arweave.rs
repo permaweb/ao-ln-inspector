@@ -136,7 +136,7 @@ pub async fn fetch_arweave_window(
     let target_block = fetch_arweave_block(client, arweave_url, target_block_height)
         .await
         .with_context(|| format!("failed fetching Arweave block {target_block_height}"))?;
-    let next_block = fetch_arweave_block(client, arweave_url, next_block_height)
+    let next_block = fetch_arweave_block_optional(client, arweave_url, next_block_height)
         .await
         .with_context(|| format!("failed fetching Arweave block {next_block_height}"))?;
 
@@ -145,7 +145,7 @@ pub async fn fetch_arweave_window(
         target_block_height,
         next_block_height,
         target_block.timestamp,
-        Some(next_block.timestamp),
+        next_block.map(|block| block.timestamp),
     ))
 }
 
@@ -335,6 +335,27 @@ async fn fetch_arweave_block(
         .context("Arweave returned an error response")?;
 
     response.json::<ArweaveBlock>().await.context("failed to deserialize Arweave block response")
+}
+
+async fn fetch_arweave_block_optional(
+    client: &Client,
+    arweave_url: &str,
+    block_height: u64,
+) -> Result<Option<ArweaveBlock>> {
+    let url = arweave_block_url(arweave_url, block_height)?;
+    let response = client.get(url).send().await.context("failed to contact Arweave")?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+
+    let response = response.error_for_status().context("Arweave returned an error response")?;
+
+    response
+        .json::<ArweaveBlock>()
+        .await
+        .map(Some)
+        .context("failed to deserialize Arweave block response")
 }
 
 fn arweave_block_url(arweave_url: &str, block_height: u64) -> Result<Url> {
