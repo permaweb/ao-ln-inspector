@@ -1,6 +1,6 @@
 pub const APP_NAME: &str = "ao-ln-inspector";
 pub const SERVER_HOST: &str = "0.0.0.0";
-pub const SERVER_PORT: u16 = 3000;
+pub const SERVER_PORT: u16 = 3131;
 pub const DEFAULT_SU_URL: &str = "https://su-router.ao-testnet.xyz";
 pub const DEFAULT_ARWEAVE_URL: &str = "https://arweave.net";
 pub const DEFAULT_GQL_URL: &str = "https://cache.forward.computer/~query@1.0/graphql";
