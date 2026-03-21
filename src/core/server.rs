@@ -112,9 +112,9 @@ pub async fn handle_ao_token_transfer(
         &id,
         notice_scan_blocks.unwrap_or(1),
     )
-        .await
-        .map(Json)
-        .map_err(into_http_error)
+    .await
+    .map(Json)
+    .map_err(into_http_error)
 }
 
 fn into_http_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {

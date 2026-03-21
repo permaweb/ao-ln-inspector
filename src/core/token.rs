@@ -171,8 +171,8 @@ pub async fn fetch_ao_token_transfer_with_notices(
         .saturating_add(notice_scan_blocks);
     let end_arweave_window =
         fetch_arweave_window(client, &config.arweave_url, &end_block_height.to_string()).await?;
-    let from_timestamp_ms =
-        assignment_timestamp_value(&transfer.assignment).unwrap_or(arweave_window.from_timestamp_ms);
+    let from_timestamp_ms = assignment_timestamp_value(&transfer.assignment)
+        .unwrap_or(arweave_window.from_timestamp_ms);
     let to_timestamp_ms = end_arweave_window.to_timestamp_ms.or(arweave_window.to_timestamp_ms);
 
     let mut credit_notices = Vec::new();

@@ -4,8 +4,7 @@ use crate::core::{
 };
 use anyhow::{Context, Result, bail};
 use reqwest::{Client, Url};
-use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 
 #[derive(Debug)]
