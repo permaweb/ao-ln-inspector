@@ -69,6 +69,7 @@ pub async fn handle_route(State(state): State<AppState>) -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "routes": [
             "/",
+            "/openapi.json",
             "/v1/token/ao/transfers/{block_id}",
             "/v1/token/ao/msg/{id}",
             "/v1/token/ao/transfer/{id}"

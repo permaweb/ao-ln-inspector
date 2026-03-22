@@ -173,7 +173,11 @@ pub async fn fetch_arweave_tip_height(client: &Client, arweave_url: &str) -> Res
         .error_for_status()
         .context("Arweave returned an error response")?;
 
-    Ok(response.json::<ArweaveInfo>().await.context("failed to deserialize Arweave info response")?.height)
+    Ok(response
+        .json::<ArweaveInfo>()
+        .await
+        .context("failed to deserialize Arweave info response")?
+        .height)
 }
 
 pub async fn fetch_settlement_metadata_for_edges(
