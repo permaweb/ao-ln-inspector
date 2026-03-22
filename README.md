@@ -17,6 +17,12 @@ Within the same assignment/settlement scope, timestamp references refer to that 
 
 ## API
 
+- `GET /`
+  returns API info and liveness checks
+
+- `GET /openapi.json`
+  returns OpenAPI 3.1 document
+  
 - `GET /v1/token/ao/transfers/{block_id}`
   returns AO token `Transfer` messages **assigned** in that block (read from the SU), with settlement info and related notices when available.
   Notices are scanned from the SU first. if either notice side is missing, the API falls back to GQL notice lookup for that transfer by correlation (`Pushed-For` / transfer id).
