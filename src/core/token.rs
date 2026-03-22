@@ -1,7 +1,8 @@
 use crate::core::{
     arweave::{
         ArweaveWindow, SettledNotice, SettlementMetadata, fetch_arweave_window,
-        fetch_settled_notices_by_block_and_correlation, fetch_settlement_metadata_for_edges,
+        fetch_settled_notices_by_block_and_correlation, fetch_settled_notices_by_correlation,
+        fetch_settlement_metadata_for_edges,
     },
     constants::{AO_LN_AUTHORITY, AO_TOKEN_SYMBOL},
     server::AppConfig,
@@ -38,8 +39,8 @@ pub struct TokenTransferRecord {
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenTransferWithNoticesResponse {
     pub transfer: HistoryNode,
-    pub credit_notices: Vec<HistoryNode>,
-    pub debit_notices: Vec<HistoryNode>,
+    pub credit_notices: Vec<TokenMessageRecord>,
+    pub debit_notices: Vec<TokenMessageRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,8 +176,8 @@ pub async fn fetch_ao_token_transfer_with_notices(
         .unwrap_or(arweave_window.from_timestamp_ms);
     let to_timestamp_ms = end_arweave_window.to_timestamp_ms.or(arweave_window.to_timestamp_ms);
 
-    let mut credit_notices = Vec::new();
-    let mut debit_notices = Vec::new();
+    let mut credit_notice_nodes = Vec::new();
+    let mut debit_notice_nodes = Vec::new();
     let transfer_correlation_id = notice_correlation_id(transfer_message).to_string();
 
     for candidate_process_id in
@@ -203,6 +204,12 @@ pub async fn fetch_ao_token_transfer_with_notices(
             if !candidate_message.owner.address.eq_ignore_ascii_case(AO_LN_AUTHORITY) {
                 continue;
             }
+            if candidate_message
+                .tag_value("From-Process")
+                .is_none_or(|value| !value.eq_ignore_ascii_case(&config.ao_token_process_id))
+            {
+                continue;
+            }
             if notice_correlation_id(candidate_message) != transfer_correlation_id.as_str() {
                 continue;
             }
@@ -211,17 +218,36 @@ pub async fn fetch_ao_token_transfer_with_notices(
                 continue;
             };
             if action.eq_ignore_ascii_case("Credit-Notice") {
-                credit_notices.push(candidate_edge.node);
+                credit_notice_nodes.push(candidate_edge.node);
             } else if action.eq_ignore_ascii_case("Debit-Notice") {
-                debit_notices.push(candidate_edge.node);
+                debit_notice_nodes.push(candidate_edge.node);
             }
         }
     }
 
+    let mut credit_notices = dedupe_history_nodes_by_message_id(credit_notice_nodes)
+        .into_iter()
+        .map(build_token_message_record_from_history_node)
+        .collect::<Result<Vec<_>>>()?;
+    let mut debit_notices = dedupe_history_nodes_by_message_id(debit_notice_nodes)
+        .into_iter()
+        .map(build_token_message_record_from_history_node)
+        .collect::<Result<Vec<_>>>()?;
+
+    backfill_transfer_notices_from_gql(
+        client,
+        config,
+        &transfer.assignment,
+        transfer_message,
+        &mut credit_notices,
+        &mut debit_notices,
+    )
+    .await;
+
     Ok(TokenTransferWithNoticesResponse {
         transfer,
-        credit_notices: dedupe_history_nodes_by_message_id(credit_notices),
-        debit_notices: dedupe_history_nodes_by_message_id(debit_notices),
+        credit_notices,
+        debit_notices,
     })
 }
 
@@ -270,6 +296,64 @@ fn collect_notice_process_ids(query_process_id: &str, message: &AoMessage) -> Ve
     process_ids
 }
 
+async fn backfill_transfer_notices_from_gql(
+    client: &Client,
+    config: &AppConfig,
+    transfer_assignment: &Assignment,
+    transfer_message: &AoMessage,
+    credit_notices: &mut Vec<TokenMessageRecord>,
+    debit_notices: &mut Vec<TokenMessageRecord>,
+) {
+    let correlation_id = notice_correlation_id(transfer_message).to_string();
+    let settled_notices = match fetch_settled_notices_by_correlation(
+        client,
+        &config.gql_url,
+        std::slice::from_ref(&correlation_id),
+        &config.ao_token_process_id,
+    )
+    .await
+    {
+        Ok(settled_notices) => settled_notices,
+        Err(_) => return,
+    };
+
+    let Some(notices) = settled_notices.get(&correlation_id) else {
+        return;
+    };
+
+    for notice in notices {
+        if tag_value_from_tags(&notice.tags, "From-Process")
+            .is_none_or(|value| !value.eq_ignore_ascii_case(&config.ao_token_process_id))
+        {
+            continue;
+        }
+
+        if notice.action.eq_ignore_ascii_case("Credit-Notice") && !credit_notices.is_empty() {
+            continue;
+        }
+        if notice.action.eq_ignore_ascii_case("Debit-Notice") && !debit_notices.is_empty() {
+            continue;
+        }
+
+        if notice.action.eq_ignore_ascii_case("Credit-Notice") {
+            credit_notices
+                .push(build_token_message_record_from_assignment_and_settled_notice(
+                    transfer_assignment,
+                    notice,
+                ));
+        } else if notice.action.eq_ignore_ascii_case("Debit-Notice") {
+            debit_notices
+                .push(build_token_message_record_from_assignment_and_settled_notice(
+                    transfer_assignment,
+                    notice,
+                ));
+        }
+    }
+
+    *credit_notices = dedupe_notice_records_by_message_id(std::mem::take(credit_notices));
+    *debit_notices = dedupe_notice_records_by_message_id(std::mem::take(debit_notices));
+}
+
 async fn fetch_related_notices(
     client: &Client,
     config: &AppConfig,
@@ -298,6 +382,7 @@ async fn fetch_related_notices(
     augment_missing_notices_from_gql(
         client,
         &config.gql_url,
+        &config.ao_token_process_id,
         transfer_edges,
         transfer_settlement_metadata,
         &mut notices_by_transfer,
@@ -406,6 +491,7 @@ fn convert_su_notice_edges_to_records(
 async fn augment_missing_notices_from_gql(
     client: &Client,
     gql_url: &str,
+    ao_token_process_id: &str,
     transfer_edges: &[HistoryEdge],
     transfer_settlement_metadata: &HashMap<String, SettlementMetadata>,
     notices_by_transfer: &mut HashMap<String, TransferNoticeMatches>,
@@ -447,6 +533,7 @@ async fn augment_missing_notices_from_gql(
             gql_url,
             settlement_block_height,
             &correlation_ids,
+            ao_token_process_id,
         )
         .await
         .with_context(|| {
@@ -641,6 +728,73 @@ fn build_token_message_record_from_settled_notice(
         data: None,
         tags: notice.tags.clone(),
     }
+}
+
+fn build_token_message_record_from_assignment_and_settled_notice(
+    transfer_assignment: &Assignment,
+    notice: &SettledNotice,
+) -> TokenMessageRecord {
+    let assignment_block_height = assignment_block_height_value(transfer_assignment);
+    let from_process = tag_value_from_tags(&notice.tags, "From-Process").map(str::to_string);
+    let sender = tag_value_from_tags(&notice.tags, "Sender").map(str::to_string);
+    let recipient = tag_value_from_tags(&notice.tags, "Recipient")
+        .map(str::to_string)
+        .or_else(|| notice.recipient.clone());
+    let quantity = tag_value_from_tags(&notice.tags, "Quantity").map(str::to_string);
+    let reference = tag_value_from_tags(&notice.tags, "Reference").map(str::to_string);
+    let pushed_for = tag_value_from_tags(&notice.tags, "Pushed-For").map(str::to_string);
+
+    TokenMessageRecord {
+        action: notice.action.clone(),
+        message_id: notice.message_id.clone(),
+        assignment_id: None,
+        assignment_block_height,
+        settlement_block_height: notice.settlement_block_height,
+        assignment_timestamp_ms: None,
+        bundled_in_id: notice.bundled_in_id.clone(),
+        from_process,
+        sender,
+        recipient,
+        target: notice.recipient.clone(),
+        quantity,
+        reference,
+        pushed_for,
+        data: None,
+        tags: notice.tags.clone(),
+    }
+}
+
+fn build_token_message_record_from_history_node(node: HistoryNode) -> Result<TokenMessageRecord> {
+    let HistoryNode { message, assignment } = node;
+    let message = message.context("encountered a response node without a message payload")?;
+    let action = message.tag_value("Action").unwrap_or("Message").to_string();
+    let assignment_id = assignment.id.clone();
+    let from_process = message.tag_value("From-Process").map(str::to_string);
+    let sender = message.tag_value("Sender").map(str::to_string);
+    let recipient = message.tag_value("Recipient").map(str::to_string);
+    let target = message.target.clone().or_else(|| message.tag_value("Target").map(str::to_string));
+    let quantity = message.tag_value("Quantity").map(str::to_string);
+    let reference = message.tag_value("Reference").map(str::to_string);
+    let pushed_for = message.tag_value("Pushed-For").map(str::to_string);
+
+    Ok(TokenMessageRecord {
+        action,
+        message_id: message.id,
+        assignment_id: Some(assignment_id),
+        assignment_block_height: assignment_block_height_value(&assignment),
+        settlement_block_height: None,
+        assignment_timestamp_ms: assignment_timestamp_value(&assignment),
+        bundled_in_id: None,
+        from_process,
+        sender,
+        recipient,
+        target,
+        quantity,
+        reference,
+        pushed_for,
+        data: message.data,
+        tags: message.tags,
+    })
 }
 
 fn tag_value_from_tags<'a>(tags: &'a [Tag], name: &str) -> Option<&'a str> {
