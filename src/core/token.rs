@@ -103,14 +103,10 @@ pub async fn fetch_ao_token_transfers(
                 format!("failed resolving transfer settlement metadata from {}", config.gql_url)
             })?;
 
-    let notices_by_transfer = fetch_related_notices(
-        client,
-        config,
-        &page.arweave_window,
-        &transfer_edges,
-    )
-    .await
-    .context("failed resolving transfer notices")?;
+    let notices_by_transfer =
+        fetch_related_notices(client, config, &page.arweave_window, &transfer_edges)
+            .await
+            .context("failed resolving transfer notices")?;
 
     let transfer_count = transfer_edges.len();
     let transfers = transfer_edges
@@ -242,11 +238,7 @@ pub async fn fetch_ao_token_transfer_with_notices(
     )
     .await;
 
-    Ok(TokenTransferWithNoticesResponse {
-        transfer,
-        credit_notices,
-        debit_notices,
-    })
+    Ok(TokenTransferWithNoticesResponse { transfer, credit_notices, debit_notices })
 }
 
 fn filter_transfer_edges(edges: Vec<HistoryEdge>) -> Vec<HistoryEdge> {
@@ -334,17 +326,15 @@ async fn backfill_transfer_notices_from_gql(
         }
 
         if notice.action.eq_ignore_ascii_case("Credit-Notice") {
-            credit_notices
-                .push(build_token_message_record_from_assignment_and_settled_notice(
-                    transfer_assignment,
-                    notice,
-                ));
+            credit_notices.push(build_token_message_record_from_assignment_and_settled_notice(
+                transfer_assignment,
+                notice,
+            ));
         } else if notice.action.eq_ignore_ascii_case("Debit-Notice") {
-            debit_notices
-                .push(build_token_message_record_from_assignment_and_settled_notice(
-                    transfer_assignment,
-                    notice,
-                ));
+            debit_notices.push(build_token_message_record_from_assignment_and_settled_notice(
+                transfer_assignment,
+                notice,
+            ));
         }
     }
 
