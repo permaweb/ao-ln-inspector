@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "ao-ln-inspector"
 path = "src/main.rs"
 
+[[bin]]
+name = "ao-ln-pager"
+path = "src/bin/pager.rs"
+
 [dependencies]
 anyhow = "1.0.102"
 axum = "0.8.6"

@@ -6,4 +6,4 @@ pub mod server;
 mod su;
 mod token;
 pub mod types;
-pub use token::TokenTransfersResponse;
+pub use token::{TokenTransferRecord, TokenTransfersResponse, fetch_ao_token_transfers};

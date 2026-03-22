@@ -1,2 +1,2 @@
 pub mod core;
-mod pager;
+pub mod pager;
