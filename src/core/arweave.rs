@@ -44,6 +44,11 @@ struct ArweaveBlock {
 }
 
 #[derive(Debug, Deserialize)]
+struct ArweaveInfo {
+    height: u64,
+}
+
+#[derive(Debug, Deserialize)]
 struct GraphQlEnvelope {
     data: Option<GraphQlData>,
     errors: Option<Vec<GraphQlError>>,
@@ -155,6 +160,20 @@ pub async fn fetch_arweave_window(
         target_block.timestamp,
         next_block.map(|block| block.timestamp),
     ))
+}
+
+pub async fn fetch_arweave_tip_height(client: &Client, arweave_url: &str) -> Result<u64> {
+    let url = Url::parse(&format!("{}/info", arweave_url.trim_end_matches('/')))
+        .context("invalid Arweave base URL")?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .context("failed to contact Arweave")?
+        .error_for_status()
+        .context("Arweave returned an error response")?;
+
+    Ok(response.json::<ArweaveInfo>().await.context("failed to deserialize Arweave info response")?.height)
 }
 
 pub async fn fetch_settlement_metadata_for_edges(

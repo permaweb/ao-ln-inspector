@@ -76,6 +76,22 @@ pub async fn fetch_message_node(
     fetch_message_json(client, base_url, process_id, message_id).await
 }
 
+pub async fn probe_process(client: &Client, base_url: &str, process_id: &str) -> Result<()> {
+    let url = process_history_url(base_url, process_id, None, None, None, 1)?;
+    let response = client.get(url).send().await.context("failed to contact SU")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let su_error =
+            serde_json::from_str::<SuErrorEnvelope>(&body).ok().and_then(|envelope| envelope.error);
+        let detail = su_error.unwrap_or(body);
+        bail!("SU returned {}: {}", status, detail.trim());
+    }
+
+    Ok(())
+}
+
 async fn fetch_message_json<T: DeserializeOwned>(
     client: &Client,
     base_url: &str,

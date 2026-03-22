@@ -1,4 +1,5 @@
 use crate::core::{
+    arweave,
     constants::{
         APP_NAME, DEFAULT_AO_TOKEN_PROCESS_ID, DEFAULT_ARWEAVE_URL, DEFAULT_GQL_URL,
         DEFAULT_PAGE_SIZE, DEFAULT_SU_URL, NETWORK_VERSION,
@@ -54,9 +55,16 @@ pub fn app_state_from_env() -> Result<AppState> {
     Ok(AppState { client: Client::new(), config: app_config_from_env()? })
 }
 
-pub async fn handle_route() -> Json<Value> {
+pub async fn handle_route(State(state): State<AppState>) -> Json<Value> {
+    let (su_probe, arweave_tip) = tokio::join!(
+        su::probe_process(&state.client, &state.config.su_url, &state.config.ao_token_process_id),
+        arweave::fetch_arweave_tip_height(&state.client, &state.config.arweave_url),
+    );
+    let su_error = su_probe.as_ref().err().map(std::string::ToString::to_string);
+    let arweave_error = arweave_tip.as_ref().err().map(std::string::ToString::to_string);
+
     Json(json!({
-        "status": "running",
+        "status": if su_error.is_none() && arweave_error.is_none() { "ok" } else { "degraded" },
         "name": APP_NAME,
         "version": env!("CARGO_PKG_VERSION"),
         "routes": [
@@ -66,12 +74,23 @@ pub async fn handle_route() -> Json<Value> {
             "/v1/token/ao/transfer/{id}"
         ],
         "config": {
-            "su_url": DEFAULT_SU_URL,
-            "arweave_gateway": DEFAULT_ARWEAVE_URL,
-            "gql_url": DEFAULT_GQL_URL,
-            "ao_token_process_id": DEFAULT_AO_TOKEN_PROCESS_ID,
-            "page_size": DEFAULT_PAGE_SIZE,
+            "su_url": state.config.su_url,
+            "arweave_gateway": state.config.arweave_url,
+            "gql_url": state.config.gql_url,
+            "ao_token_process_id": state.config.ao_token_process_id,
+            "page_size": state.config.page_size,
             "network": NETWORK_VERSION
+        },
+        "checks": {
+            "su": {
+                "ok": su_error.is_none(),
+                "error": su_error,
+            },
+            "arweave": {
+                "ok": arweave_error.is_none(),
+                "tip_height": arweave_tip.ok(),
+                "error": arweave_error,
+            }
         }
     }))
 }

@@ -1,7 +1,7 @@
 <p align="center">
   <a href="https://ao.arweave.net">
     <img src="https://arweave.net/AzM59q2tcYzkySUUZUN1HCwfKGVHi--71UdoIk5gPUE"
-    height= 100>
+    height= 500 width=500>
   </a>
 </p>
 
