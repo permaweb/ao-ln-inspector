@@ -1,6 +1,6 @@
 use crate::core::{
     constants::{
-        AO_LN_AUTHORITY, GQL_BATCH_SIZE, GQL_NOTICE_BATCH_SIZE, SETTLED_NOTICES_QUERY,
+        AO_LN_AUTHORITY, GQL_BATCH_SIZE, GQL_NOTICE_BATCH_SIZE,
         SETTLED_NOTICES_BY_CORRELATION_QUERY, SETTLEMENT_HEIGHTS_QUERY,
     },
     types::{HistoryEdge, normalize_block_height},
@@ -175,98 +175,6 @@ pub async fn fetch_settlement_metadata_for_edges(
     }
 
     fetch_settlement_metadata(client, gql_url, &message_ids).await
-}
-
-pub async fn fetch_settled_notices_by_block_and_correlation(
-    client: &Client,
-    gql_url: &str,
-    settlement_block_height: u64,
-    correlation_ids: &[String],
-    from_process_id: &str,
-) -> Result<HashMap<String, Vec<SettledNotice>>> {
-    let mut grouped = HashMap::<String, Vec<SettledNotice>>::new();
-    if correlation_ids.is_empty() {
-        return Ok(grouped);
-    }
-
-    let url = Url::parse(gql_url).context("invalid GraphQL URL")?;
-    let mut seen = HashSet::new();
-    let deduped_correlation_ids = correlation_ids
-        .iter()
-        .filter(|correlation_id| seen.insert((*correlation_id).clone()))
-        .cloned()
-        .collect::<Vec<_>>();
-
-    for batch in deduped_correlation_ids.chunks(GQL_NOTICE_BATCH_SIZE) {
-        let mut after = None::<String>;
-
-        loop {
-            let envelope = client
-                .post(url.clone())
-                .json(&json!({
-                    "query": SETTLED_NOTICES_QUERY,
-                    "variables": {
-                        "blockHeight": settlement_block_height,
-                        "correlationIds": batch,
-                        "fromProcessIds": [from_process_id],
-                        "owners": [AO_LN_AUTHORITY],
-                        "after": after,
-                    },
-                }))
-                .send()
-                .await
-                .context("failed to contact GraphQL endpoint")?
-                .error_for_status()
-                .context("GraphQL endpoint returned an error response")?
-                .json::<NoticeGraphQlEnvelope>()
-                .await
-                .context("failed to deserialize GraphQL response")?;
-
-            if let Some(errors) = envelope.errors {
-                let message =
-                    errors.into_iter().map(|error| error.message).collect::<Vec<_>>().join("; ");
-                bail!("GraphQL returned errors: {message}");
-            }
-
-            let data = envelope.data.context("GraphQL response did not include data")?;
-            let mut last_cursor = None::<String>;
-            for edge in data.transactions.edges {
-                last_cursor = Some(edge.cursor.clone());
-                if !edge.node.owner.address.eq_ignore_ascii_case(AO_LN_AUTHORITY) {
-                    continue;
-                }
-                let Some(correlation_id) = tag_value(&edge.node.tags, "Pushed-For") else {
-                    continue;
-                };
-                let Some(action) = tag_value(&edge.node.tags, "Action") else {
-                    continue;
-                };
-                if !matches_ignore_ascii_case(action, "Credit-Notice")
-                    && !matches_ignore_ascii_case(action, "Debit-Notice")
-                {
-                    continue;
-                }
-
-                grouped.entry(correlation_id.to_string()).or_default().push(SettledNotice {
-                    message_id: edge.node.id,
-                    action: action.to_string(),
-                    correlation_id: correlation_id.to_string(),
-                    owner_address: edge.node.owner.address,
-                    settlement_block_height: edge.node.block.map(|block| block.height),
-                    bundled_in_id: edge.node.bundled_in.map(|bundle| bundle.id),
-                    recipient: edge.node.recipient,
-                    tags: edge.node.tags,
-                });
-            }
-
-            if !data.transactions.page_info.has_next_page {
-                break;
-            }
-            after = last_cursor;
-        }
-    }
-
-    Ok(grouped)
 }
 
 pub async fn fetch_settled_notices_by_correlation(

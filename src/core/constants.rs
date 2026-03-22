@@ -32,55 +32,6 @@ query SettlementHeights($ids: [ID!]!) {
 }
 "#;
 
-pub(crate) const SETTLED_NOTICES_QUERY: &str = r#"
-query SettledNotices(
-  $blockHeight: Int!,
-  $correlationIds: [String!]!,
-  $fromProcessIds: [String!]!,
-  $owners: [String!]!,
-  $after: String
-) {
-  transactions(
-    first: 100
-    after: $after
-    sort: HEIGHT_ASC
-    owners: $owners
-    block: { min: $blockHeight, max: $blockHeight }
-    tags: [
-      { name: "Action", values: ["Credit-Notice", "Debit-Notice"] }
-      { name: "Pushed-For", values: $correlationIds }
-      { name: "From-Process", values: $fromProcessIds }
-      { name: "Data-Protocol", values: ["ao"] }
-      { name: "Type", values: ["Message"] }
-    ]
-  ) {
-    pageInfo {
-      hasNextPage
-    }
-    edges {
-      cursor
-      node {
-        id
-        owner {
-          address
-        }
-        recipient
-        tags {
-          name
-          value
-        }
-        block {
-          height
-        }
-        bundledIn {
-          id
-        }
-      }
-    }
-  }
-}
-"#;
-
 pub(crate) const SETTLED_NOTICES_BY_CORRELATION_QUERY: &str = r#"
 query SettledNoticesByCorrelation(
   $correlationIds: [String!]!,

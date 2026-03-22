@@ -1,8 +1,7 @@
 use crate::core::{
     arweave::{
         ArweaveWindow, SettledNotice, SettlementMetadata, fetch_arweave_window,
-        fetch_settled_notices_by_block_and_correlation, fetch_settled_notices_by_correlation,
-        fetch_settlement_metadata_for_edges,
+        fetch_settled_notices_by_correlation, fetch_settlement_metadata_for_edges,
     },
     constants::{AO_LN_AUTHORITY, AO_TOKEN_SYMBOL},
     server::AppConfig,
@@ -109,7 +108,6 @@ pub async fn fetch_ao_token_transfers(
         config,
         &page.arweave_window,
         &transfer_edges,
-        &transfer_settlement_metadata,
     )
     .await
     .context("failed resolving transfer notices")?;
@@ -359,7 +357,6 @@ async fn fetch_related_notices(
     config: &AppConfig,
     arweave_window: &ArweaveWindow,
     transfer_edges: &[HistoryEdge],
-    transfer_settlement_metadata: &HashMap<String, SettlementMetadata>,
 ) -> Result<HashMap<String, TransferNoticeMatches>> {
     let su_notice_edges =
         fetch_related_notice_edges_from_su(client, config, arweave_window, transfer_edges).await?;
@@ -384,7 +381,6 @@ async fn fetch_related_notices(
         &config.gql_url,
         &config.ao_token_process_id,
         transfer_edges,
-        transfer_settlement_metadata,
         &mut notices_by_transfer,
     )
     .await?;
@@ -493,84 +489,73 @@ async fn augment_missing_notices_from_gql(
     gql_url: &str,
     ao_token_process_id: &str,
     transfer_edges: &[HistoryEdge],
-    transfer_settlement_metadata: &HashMap<String, SettlementMetadata>,
     notices_by_transfer: &mut HashMap<String, TransferNoticeMatches>,
 ) -> Result<()> {
-    let mut transfers_by_settlement_block = HashMap::<u64, Vec<HistoryEdge>>::new();
+    let missing_transfers = transfer_edges
+        .iter()
+        .filter_map(|transfer_edge| {
+            let message = transfer_edge.node.message.as_ref()?;
+            let current = notices_by_transfer.get(&message.id).cloned().unwrap_or_default();
+            if !current.credit.is_empty() && !current.debit.is_empty() {
+                return None;
+            }
+            Some(transfer_edge.clone())
+        })
+        .collect::<Vec<_>>();
 
-    for transfer_edge in transfer_edges {
-        let Some(message) = transfer_edge.node.message.as_ref() else {
-            continue;
-        };
-        let current = notices_by_transfer.get(&message.id).cloned().unwrap_or_default();
-        if !current.credit.is_empty() && !current.debit.is_empty() {
-            continue;
-        }
-
-        let Some(settlement_block_height) = transfer_settlement_metadata
-            .get(&message.id)
-            .and_then(|settlement| settlement.settlement_block_height)
-        else {
-            continue;
-        };
-
-        transfers_by_settlement_block
-            .entry(settlement_block_height)
-            .or_default()
-            .push(transfer_edge.clone());
+    if missing_transfers.is_empty() {
+        return Ok(());
     }
 
-    for (settlement_block_height, grouped_transfers) in transfers_by_settlement_block {
-        let correlation_ids = grouped_transfers
-            .iter()
-            .filter_map(|transfer_edge| {
-                transfer_edge.node.message.as_ref().map(notice_correlation_id).map(str::to_string)
-            })
-            .collect::<Vec<_>>();
+    let correlation_ids = missing_transfers
+        .iter()
+        .filter_map(|transfer_edge| {
+            transfer_edge.node.message.as_ref().map(notice_correlation_id).map(str::to_string)
+        })
+        .collect::<Vec<_>>();
 
-        let settled_notices = fetch_settled_notices_by_block_and_correlation(
-            client,
-            gql_url,
-            settlement_block_height,
-            &correlation_ids,
-            ao_token_process_id,
-        )
-        .await
-        .with_context(|| {
-            format!("failed fetching settled notices from GraphQL block {settlement_block_height}")
-        })?;
+    let settled_notices = match fetch_settled_notices_by_correlation(
+        client,
+        gql_url,
+        &correlation_ids,
+        ao_token_process_id,
+    )
+    .await
+    {
+        Ok(settled_notices) => settled_notices,
+        Err(_) => return Ok(()),
+    };
 
-        for transfer_edge in grouped_transfers {
-            let Some(transfer_message) = transfer_edge.node.message.as_ref() else {
-                continue;
-            };
-            let transfer_message_id = transfer_message.id.clone();
-            let correlation_id = notice_correlation_id(transfer_message);
-            let Some(notices) = settled_notices.get(correlation_id) else {
-                continue;
-            };
+    for transfer_edge in missing_transfers {
+        let Some(transfer_message) = transfer_edge.node.message.as_ref() else {
+            continue;
+        };
+        let transfer_message_id = transfer_message.id.clone();
+        let correlation_id = notice_correlation_id(transfer_message);
+        let Some(notices) = settled_notices.get(correlation_id) else {
+            continue;
+        };
 
-            let entry = notices_by_transfer.entry(transfer_message_id).or_default();
-            for notice in notices {
-                match notice.action.as_str() {
-                    action if action.eq_ignore_ascii_case("Credit-Notice") => {
-                        entry.credit.push(build_token_message_record_from_settled_notice(
-                            &transfer_edge,
-                            notice,
-                        ));
-                    }
-                    action if action.eq_ignore_ascii_case("Debit-Notice") => {
-                        entry.debit.push(build_token_message_record_from_settled_notice(
-                            &transfer_edge,
-                            notice,
-                        ));
-                    }
-                    _ => {}
+        let entry = notices_by_transfer.entry(transfer_message_id).or_default();
+        for notice in notices {
+            match notice.action.as_str() {
+                action if action.eq_ignore_ascii_case("Credit-Notice") => {
+                    entry.credit.push(build_token_message_record_from_settled_notice(
+                        &transfer_edge,
+                        notice,
+                    ));
                 }
+                action if action.eq_ignore_ascii_case("Debit-Notice") => {
+                    entry.debit.push(build_token_message_record_from_settled_notice(
+                        &transfer_edge,
+                        notice,
+                    ));
+                }
+                _ => {}
             }
-            entry.credit = dedupe_notice_records_by_message_id(std::mem::take(&mut entry.credit));
-            entry.debit = dedupe_notice_records_by_message_id(std::mem::take(&mut entry.debit));
         }
+        entry.credit = dedupe_notice_records_by_message_id(std::mem::take(&mut entry.credit));
+        entry.debit = dedupe_notice_records_by_message_id(std::mem::take(&mut entry.debit));
     }
 
     Ok(())
