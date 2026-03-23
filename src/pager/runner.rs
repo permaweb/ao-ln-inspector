@@ -51,11 +51,20 @@ pub async fn run_once(client: &Client, config: &AppConfig) -> Result<RunnerOutco
     }
 
     let response = fetch_ao_token_transfers(client, config, &next_block.to_string()).await?;
+    let should_pin = should_pin_report(&response);
     let summary = format_block_summary(&response, live_tip);
-    send_block_result(summary).await?;
+    send_block_result(summary, should_pin).await?;
     state::save_next_block(next_block.saturating_add(1))?;
 
     Ok(RunnerOutcome::Scanned { block: next_block, live_tip })
+}
+
+fn should_pin_report(response: &TokenTransfersResponse) -> bool {
+    response.transfer_count > 0
+        && response
+            .transfers
+            .iter()
+            .any(|transfer| transfer.credit_notices.is_empty() || transfer.debit_notices.is_empty())
 }
 
 fn format_block_summary(response: &TokenTransfersResponse, live_tip: u64) -> String {
