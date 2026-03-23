@@ -13,6 +13,8 @@ pub const AO_TOKEN_SYMBOL: &str = "ao";
 
 pub(crate) const GQL_BATCH_SIZE: usize = 100;
 pub(crate) const GQL_NOTICE_BATCH_SIZE: usize = 100;
+pub(crate) const ASSIGNMENT_BLOCK_WINDOW_PADDING_MS: i64 = 60_000;
+
 
 pub(crate) const SETTLEMENT_HEIGHTS_QUERY: &str = r#"
 query SettlementHeights($ids: [ID!]!) {

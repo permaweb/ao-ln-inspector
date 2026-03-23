@@ -1,6 +1,7 @@
 use crate::core::{
     arweave::{ArweaveWindow, fetch_arweave_window},
     types::{HistoryEdge, HistoryNode, ProcessHistoryResponse},
+    constants::ASSIGNMENT_BLOCK_WINDOW_PADDING_MS
 };
 use anyhow::{Context, Result, bail};
 use reqwest::{Client, Url};
@@ -34,12 +35,18 @@ pub async fn fetch_process_edges_for_assignment_block(
     page_size: usize,
 ) -> Result<AssignmentBlockEdges> {
     let arweave_window = fetch_arweave_window(client, arweave_url, block_height).await?;
+    // SU assignment timestamps can drift slightly around the Arweave block timestamp boundaries.
+    // Pad the lookup window and let the final assignment Block-Height filter decide membership.
+    let padded_from_timestamp_ms =
+        arweave_window.from_timestamp_ms.saturating_sub(ASSIGNMENT_BLOCK_WINDOW_PADDING_MS);
+    let padded_to_timestamp_ms =
+        arweave_window.to_timestamp_ms.map(|value| value.saturating_add(ASSIGNMENT_BLOCK_WINDOW_PADDING_MS));
     let process_page = fetch_process_edges_for_window(
         client,
         su_url,
         process_id,
-        arweave_window.from_timestamp_ms,
-        arweave_window.to_timestamp_ms,
+        padded_from_timestamp_ms,
+        padded_to_timestamp_ms,
         page_size,
     )
     .await
