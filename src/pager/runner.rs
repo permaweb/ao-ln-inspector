@@ -129,9 +129,9 @@ fn append_missing_examples(
             tx_link(&transfer.transfer.message_id)
         } else {
             format!(
-                "{} | {}",
-                tx_link(&transfer.correlation_id),
-                tx_link(&transfer.transfer.message_id)
+                "{} | corr {}",
+                tx_link(&transfer.transfer.message_id),
+                tx_link(&transfer.correlation_id)
             )
         };
         lines.push(format!("- {example}"));
