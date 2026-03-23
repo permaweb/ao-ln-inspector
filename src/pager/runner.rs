@@ -12,7 +12,7 @@ use reqwest::Client;
 use std::time::Duration;
 
 const PAGER_TIP_LAG_BLOCKS: u64 = 20;
-const PAGER_INTERVAL_SECS: u64 = 180;
+const PAGER_INTERVAL_SECS: u64 = 30;
 const MISSING_EXAMPLES_LIMIT: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
