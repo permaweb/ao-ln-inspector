@@ -3,7 +3,7 @@ use crate::core::{
         ArweaveWindow, SettledNotice, SettlementMetadata, fetch_arweave_window,
         fetch_settled_notices_by_correlation, fetch_settlement_metadata_for_edges,
     },
-    constants::{AO_LN_AUTHORITY, AO_TOKEN_SYMBOL},
+    constants::{AO_LN_AUTHORITY, AO_TOKEN_SYMBOL, NETWORK_VERSION},
     server::AppConfig,
     su,
     types::{AoMessage, Assignment, HistoryEdge, HistoryNode, Tag, normalize_block_height},
@@ -95,7 +95,7 @@ pub async fn fetch_ao_token_transfers(
         )
     })?;
 
-    let transfer_edges = filter_transfer_edges(page.edges);
+    let transfer_edges = filter_transfer_edges(page.edges, &config.ao_token_process_id);
     let transfer_settlement_metadata =
         fetch_settlement_metadata_for_edges(client, &config.gql_url, &transfer_edges)
             .await
@@ -241,15 +241,37 @@ pub async fn fetch_ao_token_transfer_with_notices(
     Ok(TokenTransferWithNoticesResponse { transfer, credit_notices, debit_notices })
 }
 
-fn filter_transfer_edges(edges: Vec<HistoryEdge>) -> Vec<HistoryEdge> {
+fn filter_transfer_edges(edges: Vec<HistoryEdge>, process_id: &str) -> Vec<HistoryEdge> {
     edges
         .into_iter()
-        .filter(|edge| edge.node.message.as_ref().is_some_and(is_transfer_message))
+        .filter(|edge| {
+            edge.node
+                .message
+                .as_ref()
+                .is_some_and(|message| is_valid_transfer_message(message, &edge.node.assignment, process_id))
+        })
         .collect()
 }
 
 fn is_transfer_message(message: &AoMessage) -> bool {
     message.tag_value("Action").is_some_and(|value| value.eq_ignore_ascii_case("Transfer"))
+}
+
+fn is_valid_transfer_message(message: &AoMessage, assignment: &Assignment, process_id: &str) -> bool {
+    is_transfer_message(message)
+        && message.tag_value("Data-Protocol").is_some_and(|value| value.eq_ignore_ascii_case("ao"))
+        && message.tag_value("Variant").is_some_and(|value| value.eq_ignore_ascii_case(NETWORK_VERSION))
+        && message.tag_value("Type").is_some_and(|value| value.eq_ignore_ascii_case("Message"))
+        && message
+            .target
+            .as_deref()
+            .or_else(|| message.tag_value("Target"))
+            .is_some_and(|target| target.eq_ignore_ascii_case(process_id))
+        && assignment.owner.address.eq_ignore_ascii_case(AO_LN_AUTHORITY)
+        && assignment.tag_value("Process").is_some_and(|value| value.eq_ignore_ascii_case(process_id))
+        && assignment.tag_value("Data-Protocol").is_some_and(|value| value.eq_ignore_ascii_case("ao"))
+        && assignment.tag_value("Variant").is_some_and(|value| value.eq_ignore_ascii_case(NETWORK_VERSION))
+        && assignment.tag_value("Type").is_some_and(|value| value.eq_ignore_ascii_case("Assignment"))
 }
 
 fn notice_correlation_id<'a>(message: &'a AoMessage) -> &'a str {
