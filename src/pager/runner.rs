@@ -1,10 +1,11 @@
 use crate::{
     core::{
+        TokenTransferRecord, TokenTransfersResponse,
         arweave::fetch_arweave_tip_height,
+        fetch_ao_token_transfers,
         server::{AppConfig, app_state_from_env},
-        TokenTransferRecord, TokenTransfersResponse, fetch_ao_token_transfers,
     },
-    pager::{bot::send_block_result, state, LUNAR_EXPLORER_BASE_URL},
+    pager::{LUNAR_EXPLORER_BASE_URL, bot::send_block_result, state},
 };
 use anyhow::Result;
 use reqwest::Client;
@@ -84,10 +85,15 @@ fn format_block_summary(response: &TokenTransfersResponse, live_tip: u64) -> Str
             (false, false) => missing_both.push(transfer),
         }
     }
-    let assignment_height = str::parse::<u64>(&response.assignment_block_height_query.clone()).unwrap_or_default();
+    let assignment_height =
+        str::parse::<u64>(&response.assignment_block_height_query.clone()).unwrap_or_default();
     let mut lines = vec![
         "ao-ln pager".to_string(),
-        format!("block {} | tip {live_tip} | diff {}", assignment_height, live_tip - assignment_height),
+        format!(
+            "block {} | tip {live_tip} | diff {}",
+            assignment_height,
+            live_tip - assignment_height
+        ),
         format!("transfers {} | complete {complete}", response.transfer_count),
         format!(
             "missing credit {} | missing debit {} | missing both {}",
