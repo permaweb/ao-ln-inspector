@@ -5,7 +5,7 @@ use crate::{
         fetch_ao_token_transfers,
         server::{AppConfig, app_state_from_env},
     },
-    pager::{LUNAR_EXPLORER_BASE_URL, bot::send_block_result, state},
+    pager::{LUNAR_EXPLORER_BASE_URL, VIEWBLOCK_BLOCK_BASE_URL, bot::send_block_result, state},
 };
 use anyhow::Result;
 use reqwest::Client;
@@ -90,8 +90,9 @@ fn format_block_summary(response: &TokenTransfersResponse, live_tip: u64) -> Str
     let mut lines = vec![
         "ao-ln pager".to_string(),
         format!(
-            "block {} | tip {live_tip} | diff {}",
-            assignment_height,
+            "block {} | tip {} | diff {}",
+            block_height_link(assignment_height),
+            block_height_link(live_tip),
             live_tip - assignment_height
         ),
         format!("transfers {} | complete {complete}", response.transfer_count),
@@ -136,4 +137,8 @@ fn append_missing_examples(
 
 fn tx_link(txid: &str) -> String {
     format!(r#"<a href="{LUNAR_EXPLORER_BASE_URL}/{txid}/info">{txid}</a>"#)
+}
+
+fn block_height_link(height: u64) -> String {
+    format!(r#"<a href="{VIEWBLOCK_BLOCK_BASE_URL}/{height}">{height}</a>"#)
 }
