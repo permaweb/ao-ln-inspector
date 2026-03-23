@@ -1,8 +1,8 @@
 use crate::core::{
     arweave,
     constants::{
-        APP_NAME, DEFAULT_AO_TOKEN_PROCESS_ID, DEFAULT_ARWEAVE_URL, DEFAULT_GQL_URL,
-        DEFAULT_PAGE_SIZE, DEFAULT_SU_URL, NETWORK_VERSION,
+        APP_NAME, DEFAULT_AO_TOKEN_PROCESS_ID, DEFAULT_ARWEAVE_URL, DEFAULT_CU_URL,
+        DEFAULT_GQL_URL, DEFAULT_PAGE_SIZE, DEFAULT_SU_URL, NETWORK_VERSION,
     },
     su,
     token::{fetch_ao_token_transfer_with_notices, fetch_ao_token_transfers},
@@ -31,6 +31,7 @@ pub struct AppConfig {
     pub su_url: String,
     pub arweave_url: String,
     pub gql_url: String,
+    pub cu_url: String,
     pub ao_token_process_id: String,
     pub page_size: usize,
 }
@@ -78,6 +79,7 @@ pub async fn handle_route(State(state): State<AppState>) -> Json<Value> {
             "su_url": state.config.su_url,
             "arweave_gateway": state.config.arweave_url,
             "gql_url": state.config.gql_url,
+            "cu_url": state.config.cu_url,
             "ao_token_process_id": state.config.ao_token_process_id,
             "page_size": state.config.page_size,
             "network": NETWORK_VERSION
@@ -141,6 +143,7 @@ fn into_http_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
     let message = format_error_chain(&error);
     let status = if message.contains("block-height must be an integer")
         || message.contains("is not a Transfer")
+        || message.contains("is not a valid AO token Transfer")
     {
         StatusCode::BAD_REQUEST
     } else {
@@ -160,6 +163,7 @@ fn app_config_from_env() -> Result<AppConfig> {
         env::var("AO_LN_INSPECTOR_ARWEAVE_URL").unwrap_or_else(|_| DEFAULT_ARWEAVE_URL.to_string());
     let gql_url =
         env::var("AO_LN_INSPECTOR_GQL_URL").unwrap_or_else(|_| DEFAULT_GQL_URL.to_string());
+    let cu_url = env::var("AO_LN_INSPECTOR_CU_URL").unwrap_or_else(|_| DEFAULT_CU_URL.to_string());
     let ao_token_process_id = env::var("AO_LN_INSPECTOR_AO_TOKEN_PROCESS_ID")
         .unwrap_or_else(|_| DEFAULT_AO_TOKEN_PROCESS_ID.to_string());
 
@@ -172,5 +176,5 @@ fn app_config_from_env() -> Result<AppConfig> {
         bail!("AO_LN_INSPECTOR_PAGE_SIZE must be greater than zero");
     }
 
-    Ok(AppConfig { su_url, arweave_url, gql_url, ao_token_process_id, page_size })
+    Ok(AppConfig { su_url, arweave_url, gql_url, cu_url, ao_token_process_id, page_size })
 }

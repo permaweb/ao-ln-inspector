@@ -1,7 +1,8 @@
 use crate::core::{
     constants::{
         AO_LN_AUTHORITY, GQL_BATCH_SIZE, GQL_NOTICE_BATCH_SIZE,
-        SETTLED_NOTICES_BY_CORRELATION_QUERY, SETTLEMENT_HEIGHTS_QUERY,
+        SETTLED_NOTICES_BY_CORRELATION_QUERY, SETTLED_NOTICES_BY_REFERENCE_QUERY,
+        SETTLEMENT_HEIGHTS_QUERY,
     },
     types::{HistoryEdge, normalize_block_height},
 };
@@ -162,6 +163,33 @@ pub async fn fetch_arweave_window(
     ))
 }
 
+pub async fn fetch_arweave_window_optional(
+    client: &Client,
+    arweave_url: &str,
+    block_height: &str,
+) -> Result<Option<ArweaveWindow>> {
+    let target_block_height = parse_block_height(block_height)?;
+    let next_block_height = target_block_height.saturating_add(1);
+
+    let Some(target_block) = fetch_arweave_block_optional(client, arweave_url, target_block_height)
+        .await
+        .with_context(|| format!("failed fetching Arweave block {target_block_height}"))?
+    else {
+        return Ok(None);
+    };
+    let next_block = fetch_arweave_block_optional(client, arweave_url, next_block_height)
+        .await
+        .with_context(|| format!("failed fetching Arweave block {next_block_height}"))?;
+
+    Ok(Some(build_arweave_window(
+        arweave_url,
+        target_block_height,
+        next_block_height,
+        target_block.timestamp,
+        next_block.map(|block| block.timestamp),
+    )))
+}
+
 pub async fn fetch_arweave_tip_height(client: &Client, arweave_url: &str) -> Result<u64> {
     let url = Url::parse(&format!("{}/info", arweave_url.trim_end_matches('/')))
         .context("invalid Arweave base URL")?;
@@ -272,6 +300,98 @@ pub async fn fetch_settled_notices_by_correlation(
                     message_id: edge.node.id,
                     action: action.to_string(),
                     correlation_id: correlation_id.to_string(),
+                    owner_address: edge.node.owner.address,
+                    settlement_block_height: edge.node.block.map(|block| block.height),
+                    bundled_in_id: edge.node.bundled_in.map(|bundle| bundle.id),
+                    recipient: edge.node.recipient,
+                    tags: edge.node.tags,
+                });
+            }
+
+            if !data.transactions.page_info.has_next_page {
+                break;
+            }
+            after = last_cursor;
+        }
+    }
+
+    Ok(grouped)
+}
+
+pub async fn fetch_settled_notices_by_reference(
+    client: &Client,
+    gql_url: &str,
+    references: &[String],
+    from_process_id: &str,
+) -> Result<HashMap<String, Vec<SettledNotice>>> {
+    let mut grouped = HashMap::<String, Vec<SettledNotice>>::new();
+    if references.is_empty() {
+        return Ok(grouped);
+    }
+
+    let url = Url::parse(gql_url).context("invalid GraphQL URL")?;
+    let mut seen = HashSet::new();
+    let deduped_references = references
+        .iter()
+        .filter(|reference| seen.insert((*reference).clone()))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for batch in deduped_references.chunks(GQL_NOTICE_BATCH_SIZE) {
+        let mut after = None::<String>;
+
+        loop {
+            let envelope = client
+                .post(url.clone())
+                .json(&json!({
+                    "query": SETTLED_NOTICES_BY_REFERENCE_QUERY,
+                    "variables": {
+                        "references": batch,
+                        "fromProcessIds": [from_process_id],
+                        "owners": [AO_LN_AUTHORITY],
+                        "after": after,
+                    },
+                }))
+                .send()
+                .await
+                .context("failed to contact GraphQL endpoint")?
+                .error_for_status()
+                .context("GraphQL endpoint returned an error response")?
+                .json::<NoticeGraphQlEnvelope>()
+                .await
+                .context("failed to deserialize GraphQL response")?;
+
+            if let Some(errors) = envelope.errors {
+                let message =
+                    errors.into_iter().map(|error| error.message).collect::<Vec<_>>().join("; ");
+                bail!("GraphQL returned errors: {message}");
+            }
+
+            let data = envelope.data.context("GraphQL response did not include data")?;
+            let mut last_cursor = None::<String>;
+            for edge in data.transactions.edges {
+                last_cursor = Some(edge.cursor.clone());
+                if !edge.node.owner.address.eq_ignore_ascii_case(AO_LN_AUTHORITY) {
+                    continue;
+                }
+                let Some(reference) = tag_value(&edge.node.tags, "Reference") else {
+                    continue;
+                };
+                let Some(action) = tag_value(&edge.node.tags, "Action") else {
+                    continue;
+                };
+                if !matches_ignore_ascii_case(action, "Credit-Notice")
+                    && !matches_ignore_ascii_case(action, "Debit-Notice")
+                {
+                    continue;
+                }
+
+                grouped.entry(reference.to_string()).or_default().push(SettledNotice {
+                    message_id: edge.node.id,
+                    action: action.to_string(),
+                    correlation_id: tag_value(&edge.node.tags, "Pushed-For")
+                        .unwrap_or_default()
+                        .to_string(),
                     owner_address: edge.node.owner.address,
                     settlement_block_height: edge.node.block.map(|block| block.height),
                     bundled_in_id: edge.node.bundled_in.map(|bundle| bundle.id),

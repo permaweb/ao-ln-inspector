@@ -5,7 +5,10 @@ use crate::{
         fetch_ao_token_transfers,
         server::{AppConfig, app_state_from_env},
     },
-    pager::{LUNAR_EXPLORER_BASE_URL, VIEWBLOCK_BLOCK_BASE_URL, INSPECTOR_BLOCK_BASE_URL, bot::send_block_result, state},
+    pager::{
+        INSPECTOR_BLOCK_BASE_URL, LUNAR_EXPLORER_BASE_URL, VIEWBLOCK_BLOCK_BASE_URL,
+        bot::send_block_result, state,
+    },
 };
 use anyhow::Result;
 use reqwest::Client;

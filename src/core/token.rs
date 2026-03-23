@@ -1,9 +1,11 @@
 use crate::core::{
     arweave::{
         ArweaveWindow, SettledNotice, SettlementMetadata, fetch_arweave_window,
-        fetch_settled_notices_by_correlation, fetch_settlement_metadata_for_edges,
+        fetch_arweave_window_optional, fetch_settled_notices_by_correlation,
+        fetch_settled_notices_by_reference, fetch_settlement_metadata_for_edges,
     },
     constants::{AO_LN_AUTHORITY, AO_TOKEN_SYMBOL, NETWORK_VERSION},
+    cu,
     server::AppConfig,
     su,
     types::{AoMessage, Assignment, HistoryEdge, HistoryNode, Tag, normalize_block_height},
@@ -33,6 +35,8 @@ pub struct TokenTransferRecord {
     pub transfer: TokenMessageRecord,
     pub credit_notices: Vec<TokenMessageRecord>,
     pub debit_notices: Vec<TokenMessageRecord>,
+    pub pending_credit_notices: Vec<PendingTokenNoticeRecord>,
+    pub pending_debit_notices: Vec<PendingTokenNoticeRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,6 +44,8 @@ pub struct TokenTransferWithNoticesResponse {
     pub transfer: HistoryNode,
     pub credit_notices: Vec<TokenMessageRecord>,
     pub debit_notices: Vec<TokenMessageRecord>,
+    pub pending_credit_notices: Vec<PendingTokenNoticeRecord>,
+    pub pending_debit_notices: Vec<PendingTokenNoticeRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,10 +68,26 @@ pub struct TokenMessageRecord {
     pub tags: Vec<Tag>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingTokenNoticeRecord {
+    pub action: String,
+    pub reference: Option<String>,
+    pub from_process: String,
+    pub sender: Option<String>,
+    pub recipient: Option<String>,
+    pub target: Option<String>,
+    pub quantity: Option<String>,
+    pub pushed_for: String,
+    pub data: Option<String>,
+    pub tags: Vec<Tag>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct TransferNoticeMatches {
     credit: Vec<TokenMessageRecord>,
     debit: Vec<TokenMessageRecord>,
+    pending_credit: Vec<PendingTokenNoticeRecord>,
+    pending_debit: Vec<PendingTokenNoticeRecord>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -151,8 +173,9 @@ pub async fn fetch_ao_token_transfer_with_notices(
         .message
         .as_ref()
         .context("encountered a transfer response without a message payload")?;
-    if !is_transfer_message(transfer_message) {
-        anyhow::bail!("message {message_id} is not a Transfer");
+    if !is_valid_transfer_message(transfer_message, &transfer.assignment, &config.ao_token_process_id)
+    {
+        anyhow::bail!("message {message_id} is not a valid AO token Transfer");
     }
 
     let block_height = transfer
@@ -165,10 +188,11 @@ pub async fn fetch_ao_token_transfer_with_notices(
         .context("transfer assignment Block-Height is not an integer")?
         .saturating_add(notice_scan_blocks);
     let end_arweave_window =
-        fetch_arweave_window(client, &config.arweave_url, &end_block_height.to_string()).await?;
+        fetch_arweave_window_optional(client, &config.arweave_url, &end_block_height.to_string())
+            .await?;
     let from_timestamp_ms = assignment_timestamp_value(&transfer.assignment)
         .unwrap_or(arweave_window.from_timestamp_ms);
-    let to_timestamp_ms = end_arweave_window.to_timestamp_ms.or(arweave_window.to_timestamp_ms);
+    let to_timestamp_ms = end_arweave_window.and_then(|window| window.to_timestamp_ms);
 
     let mut credit_notice_nodes = Vec::new();
     let mut debit_notice_nodes = Vec::new();
@@ -237,18 +261,32 @@ pub async fn fetch_ao_token_transfer_with_notices(
         &mut debit_notices,
     )
     .await;
+    let pending_notices = backfill_transfer_notices_from_cu_result(
+        client,
+        config,
+        &transfer.assignment,
+        transfer_message,
+        &mut credit_notices,
+        &mut debit_notices,
+    )
+    .await;
 
-    Ok(TokenTransferWithNoticesResponse { transfer, credit_notices, debit_notices })
+    Ok(TokenTransferWithNoticesResponse {
+        transfer,
+        credit_notices,
+        debit_notices,
+        pending_credit_notices: pending_notices.pending_credit,
+        pending_debit_notices: pending_notices.pending_debit,
+    })
 }
 
 fn filter_transfer_edges(edges: Vec<HistoryEdge>, process_id: &str) -> Vec<HistoryEdge> {
     edges
         .into_iter()
         .filter(|edge| {
-            edge.node
-                .message
-                .as_ref()
-                .is_some_and(|message| is_valid_transfer_message(message, &edge.node.assignment, process_id))
+            edge.node.message.as_ref().is_some_and(|message| {
+                is_valid_transfer_message(message, &edge.node.assignment, process_id)
+            })
         })
         .collect()
 }
@@ -257,10 +295,16 @@ fn is_transfer_message(message: &AoMessage) -> bool {
     message.tag_value("Action").is_some_and(|value| value.eq_ignore_ascii_case("Transfer"))
 }
 
-fn is_valid_transfer_message(message: &AoMessage, assignment: &Assignment, process_id: &str) -> bool {
+fn is_valid_transfer_message(
+    message: &AoMessage,
+    assignment: &Assignment,
+    process_id: &str,
+) -> bool {
     is_transfer_message(message)
         && message.tag_value("Data-Protocol").is_some_and(|value| value.eq_ignore_ascii_case("ao"))
-        && message.tag_value("Variant").is_some_and(|value| value.eq_ignore_ascii_case(NETWORK_VERSION))
+        && message
+            .tag_value("Variant")
+            .is_some_and(|value| value.eq_ignore_ascii_case(NETWORK_VERSION))
         && message.tag_value("Type").is_some_and(|value| value.eq_ignore_ascii_case("Message"))
         && message
             .target
@@ -268,10 +312,18 @@ fn is_valid_transfer_message(message: &AoMessage, assignment: &Assignment, proce
             .or_else(|| message.tag_value("Target"))
             .is_some_and(|target| target.eq_ignore_ascii_case(process_id))
         && assignment.owner.address.eq_ignore_ascii_case(AO_LN_AUTHORITY)
-        && assignment.tag_value("Process").is_some_and(|value| value.eq_ignore_ascii_case(process_id))
-        && assignment.tag_value("Data-Protocol").is_some_and(|value| value.eq_ignore_ascii_case("ao"))
-        && assignment.tag_value("Variant").is_some_and(|value| value.eq_ignore_ascii_case(NETWORK_VERSION))
-        && assignment.tag_value("Type").is_some_and(|value| value.eq_ignore_ascii_case("Assignment"))
+        && assignment
+            .tag_value("Process")
+            .is_some_and(|value| value.eq_ignore_ascii_case(process_id))
+        && assignment
+            .tag_value("Data-Protocol")
+            .is_some_and(|value| value.eq_ignore_ascii_case("ao"))
+        && assignment
+            .tag_value("Variant")
+            .is_some_and(|value| value.eq_ignore_ascii_case(NETWORK_VERSION))
+        && assignment
+            .tag_value("Type")
+            .is_some_and(|value| value.eq_ignore_ascii_case("Assignment"))
 }
 
 fn notice_correlation_id<'a>(message: &'a AoMessage) -> &'a str {
@@ -364,6 +416,76 @@ async fn backfill_transfer_notices_from_gql(
     *debit_notices = dedupe_notice_records_by_message_id(std::mem::take(debit_notices));
 }
 
+async fn backfill_transfer_notices_from_cu_result(
+    client: &Client,
+    config: &AppConfig,
+    transfer_assignment: &Assignment,
+    transfer_message: &AoMessage,
+    credit_notices: &mut Vec<TokenMessageRecord>,
+    debit_notices: &mut Vec<TokenMessageRecord>,
+) -> TransferNoticeMatches {
+    let mut pending_matches = TransferNoticeMatches::default();
+    if !credit_notices.is_empty() && !debit_notices.is_empty() {
+        return pending_matches;
+    }
+
+    let cu_pending_notices = match cu::fetch_pending_notices_for_transfer(
+        client,
+        &config.cu_url,
+        &config.ao_token_process_id,
+        &transfer_message.id,
+    )
+    .await
+    {
+        Ok(cu_pending_notices) => cu_pending_notices,
+        Err(_) => return pending_matches,
+    };
+
+    let requested_references = collect_missing_notice_references(
+        &cu_pending_notices,
+        credit_notices.is_empty(),
+        debit_notices.is_empty(),
+    );
+    let settled_notices = if requested_references.is_empty() {
+        HashMap::new()
+    } else {
+        match fetch_settled_notices_by_reference(
+            client,
+            &config.gql_url,
+            &requested_references,
+            &config.ao_token_process_id,
+        )
+        .await
+        {
+            Ok(settled_notices) => settled_notices,
+            Err(_) => HashMap::new(),
+        }
+    };
+
+    fill_missing_transfer_notices_from_references(
+        &cu_pending_notices,
+        &settled_notices,
+        credit_notices,
+        debit_notices,
+        |notice| {
+            build_token_message_record_from_assignment_and_settled_notice(
+                transfer_assignment,
+                notice,
+            )
+        },
+    );
+    fill_pending_transfer_notices_from_cu(
+        &cu_pending_notices,
+        transfer_message.id.as_str(),
+        &config.ao_token_process_id,
+        credit_notices.is_empty(),
+        debit_notices.is_empty(),
+        &mut pending_matches,
+    );
+
+    pending_matches
+}
+
 async fn fetch_related_notices(
     client: &Client,
     config: &AppConfig,
@@ -392,6 +514,13 @@ async fn fetch_related_notices(
         client,
         &config.gql_url,
         &config.ao_token_process_id,
+        transfer_edges,
+        &mut notices_by_transfer,
+    )
+    .await?;
+    augment_missing_notices_from_cu_result(
+        client,
+        config,
         transfer_edges,
         &mut notices_by_transfer,
     )
@@ -445,6 +574,12 @@ async fn fetch_related_notice_edges_from_su(
                     continue;
                 };
                 if !candidate_message.owner.address.eq_ignore_ascii_case(AO_LN_AUTHORITY) {
+                    continue;
+                }
+                if candidate_message
+                    .tag_value("From-Process")
+                    .is_none_or(|value| !value.eq_ignore_ascii_case(&config.ao_token_process_id))
+                {
                     continue;
                 }
                 if notice_correlation_id(candidate_message) != transfer_correlation_id.as_str() {
@@ -573,6 +708,188 @@ async fn augment_missing_notices_from_gql(
     Ok(())
 }
 
+async fn augment_missing_notices_from_cu_result(
+    client: &Client,
+    config: &AppConfig,
+    transfer_edges: &[HistoryEdge],
+    notices_by_transfer: &mut HashMap<String, TransferNoticeMatches>,
+) -> Result<()> {
+    let missing_transfers = transfer_edges
+        .iter()
+        .filter_map(|transfer_edge| {
+            let message = transfer_edge.node.message.as_ref()?;
+            let current = notices_by_transfer.get(&message.id).cloned().unwrap_or_default();
+            if !current.credit.is_empty() && !current.debit.is_empty() {
+                return None;
+            }
+            Some(transfer_edge)
+        })
+        .collect::<Vec<_>>();
+
+    for transfer_edge in missing_transfers {
+        let Some(transfer_message) = transfer_edge.node.message.as_ref() else {
+            continue;
+        };
+        let current = notices_by_transfer.get(&transfer_message.id).cloned().unwrap_or_default();
+        let cu_pending_notices = match cu::fetch_pending_notices_for_transfer(
+            client,
+            &config.cu_url,
+            &config.ao_token_process_id,
+            &transfer_message.id,
+        )
+        .await
+        {
+            Ok(cu_pending_notices) => cu_pending_notices,
+            Err(_) => continue,
+        };
+
+        let requested_references = collect_missing_notice_references(
+            &cu_pending_notices,
+            current.credit.is_empty(),
+            current.debit.is_empty(),
+        );
+        let settled_notices = if requested_references.is_empty() {
+            HashMap::new()
+        } else {
+            match fetch_settled_notices_by_reference(
+                client,
+                &config.gql_url,
+                &requested_references,
+                &config.ao_token_process_id,
+            )
+            .await
+            {
+                Ok(settled_notices) => settled_notices,
+                Err(_) => HashMap::new(),
+            }
+        };
+
+        let entry = notices_by_transfer.entry(transfer_message.id.clone()).or_default();
+        fill_missing_transfer_notices_from_references(
+            &cu_pending_notices,
+            &settled_notices,
+            &mut entry.credit,
+            &mut entry.debit,
+            |notice| build_token_message_record_from_settled_notice(transfer_edge, notice),
+        );
+        fill_pending_transfer_notices_from_cu(
+            &cu_pending_notices,
+            transfer_message.id.as_str(),
+            &config.ao_token_process_id,
+            entry.credit.is_empty(),
+            entry.debit.is_empty(),
+            entry,
+        );
+    }
+
+    Ok(())
+}
+
+fn collect_missing_notice_references(
+    cu_pending_notices: &cu::CuPendingNotices,
+    missing_credit: bool,
+    missing_debit: bool,
+) -> Vec<String> {
+    let mut references = Vec::new();
+    let mut seen = HashSet::new();
+
+    if missing_credit {
+        for notice in &cu_pending_notices.credit {
+            let Some(reference) = notice.reference.as_ref() else {
+                continue;
+            };
+            if seen.insert(reference.clone()) {
+                references.push(reference.clone());
+            }
+        }
+    }
+    if missing_debit {
+        for notice in &cu_pending_notices.debit {
+            let Some(reference) = notice.reference.as_ref() else {
+                continue;
+            };
+            if seen.insert(reference.clone()) {
+                references.push(reference.clone());
+            }
+        }
+    }
+
+    references
+}
+
+fn fill_missing_transfer_notices_from_references<F>(
+    cu_pending_notices: &cu::CuPendingNotices,
+    settled_notices_by_reference: &HashMap<String, Vec<SettledNotice>>,
+    credit_notices: &mut Vec<TokenMessageRecord>,
+    debit_notices: &mut Vec<TokenMessageRecord>,
+    mut build_record: F,
+) where
+    F: FnMut(&SettledNotice) -> TokenMessageRecord,
+{
+    if credit_notices.is_empty() {
+        for notice_hint in &cu_pending_notices.credit {
+            let Some(reference) = notice_hint.reference.as_ref() else {
+                continue;
+            };
+            let Some(notices) = settled_notices_by_reference.get(reference) else {
+                continue;
+            };
+            for notice in notices {
+                if notice.action.eq_ignore_ascii_case("Credit-Notice") {
+                    credit_notices.push(build_record(notice));
+                }
+            }
+        }
+    }
+
+    if debit_notices.is_empty() {
+        for notice_hint in &cu_pending_notices.debit {
+            let Some(reference) = notice_hint.reference.as_ref() else {
+                continue;
+            };
+            let Some(notices) = settled_notices_by_reference.get(reference) else {
+                continue;
+            };
+            for notice in notices {
+                if notice.action.eq_ignore_ascii_case("Debit-Notice") {
+                    debit_notices.push(build_record(notice));
+                }
+            }
+        }
+    }
+
+    *credit_notices = dedupe_notice_records_by_message_id(std::mem::take(credit_notices));
+    *debit_notices = dedupe_notice_records_by_message_id(std::mem::take(debit_notices));
+}
+
+fn fill_pending_transfer_notices_from_cu(
+    cu_pending_notices: &cu::CuPendingNotices,
+    transfer_id: &str,
+    ao_token_process_id: &str,
+    missing_credit: bool,
+    missing_debit: bool,
+    matches: &mut TransferNoticeMatches,
+) {
+    if missing_credit {
+        matches.pending_credit = cu_pending_notices
+            .credit
+            .iter()
+            .map(|notice| {
+                build_pending_token_notice_record(notice, transfer_id, ao_token_process_id)
+            })
+            .collect();
+    }
+    if missing_debit {
+        matches.pending_debit = cu_pending_notices
+            .debit
+            .iter()
+            .map(|notice| {
+                build_pending_token_notice_record(notice, transfer_id, ao_token_process_id)
+            })
+            .collect();
+    }
+}
+
 fn dedupe_edges_by_message_id(edges: Vec<HistoryEdge>) -> Vec<HistoryEdge> {
     let mut seen = HashSet::new();
     let mut deduped = Vec::new();
@@ -641,6 +958,8 @@ fn build_token_transfer_record(
         transfer: build_token_message_record(edge, transfer_settlement)?,
         credit_notices: notice_matches.credit,
         debit_notices: notice_matches.debit,
+        pending_credit_notices: notice_matches.pending_credit,
+        pending_debit_notices: notice_matches.pending_debit,
     })
 }
 
@@ -792,6 +1111,25 @@ fn build_token_message_record_from_history_node(node: HistoryNode) -> Result<Tok
         data: message.data,
         tags: message.tags,
     })
+}
+
+fn build_pending_token_notice_record(
+    notice: &cu::CuPendingNotice,
+    transfer_id: &str,
+    ao_token_process_id: &str,
+) -> PendingTokenNoticeRecord {
+    PendingTokenNoticeRecord {
+        action: notice.action.clone(),
+        reference: notice.reference.clone(),
+        from_process: ao_token_process_id.to_string(),
+        sender: notice.sender.clone(),
+        recipient: notice.recipient.clone(),
+        target: notice.target.clone(),
+        quantity: notice.quantity.clone(),
+        pushed_for: transfer_id.to_string(),
+        data: notice.data.clone(),
+        tags: notice.tags.clone(),
+    }
 }
 
 fn tag_value_from_tags<'a>(tags: &'a [Tag], name: &str) -> Option<&'a str> {
