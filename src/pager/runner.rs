@@ -4,7 +4,7 @@ use crate::{
         server::{AppConfig, app_state_from_env},
         TokenTransferRecord, TokenTransfersResponse, fetch_ao_token_transfers,
     },
-    pager::{bot::send_block_result, state},
+    pager::{bot::send_block_result, state, LUNAR_EXPLORER_BASE_URL},
 };
 use anyhow::Result;
 use reqwest::Client;
@@ -75,16 +75,17 @@ fn format_block_summary(response: &TokenTransfersResponse, live_tip: u64) -> Str
             (false, false) => missing_both.push(transfer),
         }
     }
-
+    let assignment_height = str::parse::<u64>(&response.assignment_block_height_query.clone()).unwrap_or_default();
     let mut lines = vec![
-        format!("ao-ln pager"),
-        format!("assignment block: {}", response.assignment_block_height_query),
-        format!("live tip: {live_tip}"),
-        format!("transfers: {}", response.transfer_count),
-        format!("complete: {complete}"),
-        format!("missing credit: {}", missing_credit.len()),
-        format!("missing debit: {}", missing_debit.len()),
-        format!("missing both: {}", missing_both.len()),
+        "ao-ln pager".to_string(),
+        format!("block {} | tip {live_tip} | diff {}", assignment_height, live_tip - assignment_height),
+        format!("transfers {} | complete {complete}", response.transfer_count),
+        format!(
+            "missing credit {} | missing debit {} | missing both {}",
+            missing_credit.len(),
+            missing_debit.len(),
+            missing_both.len()
+        ),
     ];
 
     append_missing_examples(&mut lines, "missing credit", &missing_credit);
@@ -103,11 +104,21 @@ fn append_missing_examples(
         return;
     }
 
-    lines.push(format!("{label} examples:"));
+    lines.push(format!("{label}:"));
     for transfer in transfers.iter().take(MISSING_EXAMPLES_LIMIT) {
-        lines.push(format!(
-            "{} {}",
-            transfer.correlation_id, transfer.transfer.message_id
-        ));
+        let example = if transfer.correlation_id == transfer.transfer.message_id {
+            tx_link(&transfer.transfer.message_id)
+        } else {
+            format!(
+                "{} | {}",
+                tx_link(&transfer.correlation_id),
+                tx_link(&transfer.transfer.message_id)
+            )
+        };
+        lines.push(format!("- {example}"));
     }
+}
+
+fn tx_link(txid: &str) -> String {
+    format!(r#"<a href="{LUNAR_EXPLORER_BASE_URL}/{txid}/info">{txid}</a>"#)
 }
