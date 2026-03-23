@@ -11,6 +11,12 @@ pub struct CuPendingNotices {
     pub debit: Vec<CuPendingNotice>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CuTransferResult {
+    pub error: Option<String>,
+    pub pending_notices: CuPendingNotices,
+}
+
 #[derive(Debug, Clone)]
 pub struct CuPendingNotice {
     pub action: String,
@@ -25,6 +31,8 @@ pub struct CuPendingNotice {
 
 #[derive(Debug, Deserialize)]
 struct CuResultResponse {
+    #[serde(rename = "Error")]
+    error: Option<String>,
     #[serde(rename = "Messages", default)]
     messages: Vec<CuResultMessage>,
 }
@@ -45,12 +53,12 @@ struct CuResultTag {
     value: Value,
 }
 
-pub async fn fetch_pending_notices_for_transfer(
+pub async fn fetch_transfer_result(
     client: &Client,
     cu_url: &str,
     process_id: &str,
     transfer_id: &str,
-) -> Result<CuPendingNotices> {
+) -> Result<CuTransferResult> {
     let url = Url::parse(&format!(
         "{}/result/{}?process-id={}",
         cu_url.trim_end_matches('/'),
@@ -114,7 +122,13 @@ pub async fn fetch_pending_notices_for_transfer(
         }
     }
 
-    Ok(notices)
+    Ok(CuTransferResult {
+        error: response.error.and_then(|error| {
+            let trimmed = error.trim();
+            if trimmed.is_empty() { None } else { Some(error) }
+        }),
+        pending_notices: notices,
+    })
 }
 
 impl CuResultMessage {

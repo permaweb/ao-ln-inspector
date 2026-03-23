@@ -65,19 +65,25 @@ pub async fn run_once(client: &Client, config: &AppConfig) -> Result<RunnerOutco
 
 fn should_pin_report(response: &TokenTransfersResponse) -> bool {
     response.transfer_count > 0
-        && response
-            .transfers
-            .iter()
-            .any(|transfer| transfer.credit_notices.is_empty() || transfer.debit_notices.is_empty())
+        && response.transfers.iter().any(|transfer| {
+            transfer.compute_error.is_none()
+                && (transfer.credit_notices.is_empty() || transfer.debit_notices.is_empty())
+        })
 }
 
 fn format_block_summary(response: &TokenTransfersResponse, live_tip: u64) -> String {
     let mut complete = 0usize;
+    let mut compute_error = Vec::new();
     let mut missing_credit = Vec::new();
     let mut missing_debit = Vec::new();
     let mut missing_both = Vec::new();
 
     for transfer in &response.transfers {
+        if transfer.compute_error.is_some() {
+            compute_error.push(transfer);
+            continue;
+        }
+
         let has_credit = !transfer.credit_notices.is_empty();
         let has_debit = !transfer.debit_notices.is_empty();
 
@@ -100,13 +106,15 @@ fn format_block_summary(response: &TokenTransfersResponse, live_tip: u64) -> Str
         ),
         format!("transfers {} | complete {complete}", response.transfer_count),
         format!(
-            "missing credit {} | missing debit {} | missing both {}",
+            "compute error {} | missing credit {} | missing debit {} | missing both {}",
+            compute_error.len(),
             missing_credit.len(),
             missing_debit.len(),
             missing_both.len()
         ),
     ];
 
+    append_compute_error_examples(&mut lines, &compute_error);
     append_missing_examples(&mut lines, "missing credit", &missing_credit);
     append_missing_examples(&mut lines, "missing debit", &missing_debit);
     append_missing_examples(&mut lines, "missing both", &missing_both);
@@ -138,6 +146,30 @@ fn append_missing_examples(
     }
 }
 
+fn append_compute_error_examples(lines: &mut Vec<String>, transfers: &[&TokenTransferRecord]) {
+    if transfers.is_empty() {
+        return;
+    }
+
+    lines.push("compute error:".to_string());
+    for transfer in transfers.iter().take(MISSING_EXAMPLES_LIMIT) {
+        let Some(error) = transfer.compute_error.as_deref() else {
+            continue;
+        };
+        let first_line = error.lines().next().unwrap_or(error).trim();
+        let example = if transfer.correlation_id == transfer.transfer.message_id {
+            tx_link(&transfer.transfer.message_id)
+        } else {
+            format!(
+                "{} | corr {}",
+                tx_link(&transfer.transfer.message_id),
+                tx_link(&transfer.correlation_id)
+            )
+        };
+        lines.push(format!("- {example} | {}", escape_html(first_line)));
+    }
+}
+
 fn tx_link(txid: &str) -> String {
     format!(r#"<a href="{LUNAR_EXPLORER_BASE_URL}/{txid}/info">{txid}</a>"#)
 }
@@ -148,4 +180,8 @@ fn block_height_viewblock_link(height: u64) -> String {
 
 fn block_height_inspector_link(height: u64) -> String {
     format!(r#"<a href="{INSPECTOR_BLOCK_BASE_URL}/{height}">#{height}</a>"#)
+}
+
+fn escape_html(value: &str) -> String {
+    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }

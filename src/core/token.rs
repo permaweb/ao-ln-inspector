@@ -33,6 +33,7 @@ pub struct TokenTransfersResponse {
 pub struct TokenTransferRecord {
     pub correlation_id: String,
     pub transfer: TokenMessageRecord,
+    pub compute_error: Option<String>,
     pub credit_notices: Vec<TokenMessageRecord>,
     pub debit_notices: Vec<TokenMessageRecord>,
     pub pending_credit_notices: Vec<PendingTokenNoticeRecord>,
@@ -42,6 +43,7 @@ pub struct TokenTransferRecord {
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenTransferWithNoticesResponse {
     pub transfer: HistoryNode,
+    pub compute_error: Option<String>,
     pub credit_notices: Vec<TokenMessageRecord>,
     pub debit_notices: Vec<TokenMessageRecord>,
     pub pending_credit_notices: Vec<PendingTokenNoticeRecord>,
@@ -84,6 +86,7 @@ pub struct PendingTokenNoticeRecord {
 
 #[derive(Debug, Clone, Default)]
 struct TransferNoticeMatches {
+    compute_error: Option<String>,
     credit: Vec<TokenMessageRecord>,
     debit: Vec<TokenMessageRecord>,
     pending_credit: Vec<PendingTokenNoticeRecord>,
@@ -173,8 +176,11 @@ pub async fn fetch_ao_token_transfer_with_notices(
         .message
         .as_ref()
         .context("encountered a transfer response without a message payload")?;
-    if !is_valid_transfer_message(transfer_message, &transfer.assignment, &config.ao_token_process_id)
-    {
+    if !is_valid_transfer_message(
+        transfer_message,
+        &transfer.assignment,
+        &config.ao_token_process_id,
+    ) {
         anyhow::bail!("message {message_id} is not a valid AO token Transfer");
     }
 
@@ -273,6 +279,7 @@ pub async fn fetch_ao_token_transfer_with_notices(
 
     Ok(TokenTransferWithNoticesResponse {
         transfer,
+        compute_error: pending_notices.compute_error,
         credit_notices,
         debit_notices,
         pending_credit_notices: pending_notices.pending_credit,
@@ -429,7 +436,7 @@ async fn backfill_transfer_notices_from_cu_result(
         return pending_matches;
     }
 
-    let cu_pending_notices = match cu::fetch_pending_notices_for_transfer(
+    let cu_result = match cu::fetch_transfer_result(
         client,
         &config.cu_url,
         &config.ao_token_process_id,
@@ -437,9 +444,15 @@ async fn backfill_transfer_notices_from_cu_result(
     )
     .await
     {
-        Ok(cu_pending_notices) => cu_pending_notices,
+        Ok(cu_result) => cu_result,
         Err(_) => return pending_matches,
     };
+    pending_matches.compute_error = cu_result.error;
+    if pending_matches.compute_error.is_some() {
+        return pending_matches;
+    }
+
+    let cu_pending_notices = cu_result.pending_notices;
 
     let requested_references = collect_missing_notice_references(
         &cu_pending_notices,
@@ -731,7 +744,7 @@ async fn augment_missing_notices_from_cu_result(
             continue;
         };
         let current = notices_by_transfer.get(&transfer_message.id).cloned().unwrap_or_default();
-        let cu_pending_notices = match cu::fetch_pending_notices_for_transfer(
+        let cu_result = match cu::fetch_transfer_result(
             client,
             &config.cu_url,
             &config.ao_token_process_id,
@@ -739,9 +752,15 @@ async fn augment_missing_notices_from_cu_result(
         )
         .await
         {
-            Ok(cu_pending_notices) => cu_pending_notices,
+            Ok(cu_result) => cu_result,
             Err(_) => continue,
         };
+        let entry = notices_by_transfer.entry(transfer_message.id.clone()).or_default();
+        entry.compute_error = cu_result.error;
+        if entry.compute_error.is_some() {
+            continue;
+        }
+        let cu_pending_notices = cu_result.pending_notices;
 
         let requested_references = collect_missing_notice_references(
             &cu_pending_notices,
@@ -764,7 +783,6 @@ async fn augment_missing_notices_from_cu_result(
             }
         };
 
-        let entry = notices_by_transfer.entry(transfer_message.id.clone()).or_default();
         fill_missing_transfer_notices_from_references(
             &cu_pending_notices,
             &settled_notices,
@@ -956,6 +974,7 @@ fn build_token_transfer_record(
     Ok(TokenTransferRecord {
         correlation_id,
         transfer: build_token_message_record(edge, transfer_settlement)?,
+        compute_error: notice_matches.compute_error,
         credit_notices: notice_matches.credit,
         debit_notices: notice_matches.debit,
         pending_credit_notices: notice_matches.pending_credit,
