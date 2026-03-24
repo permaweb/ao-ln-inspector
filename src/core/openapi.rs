@@ -19,7 +19,7 @@ pub async fn handle_openapi() -> Json<Value> {
             "/": {
                 "get": {
                     "summary": "Root status",
-                    "description": "Returns service info and lightweight live dependency checks.",
+                    "description": "Returns service info, configured upstreams, and lightweight live dependency checks.",
                     "responses": {
                         "200": {
                             "description": "Service status payload",
@@ -55,7 +55,7 @@ pub async fn handle_openapi() -> Json<Value> {
             "/v1/token/ao/transfers/{block_id}": {
                 "get": {
                     "summary": "AO transfers by assignment block",
-                    "description": "Returns AO transfer messages assigned in the given block, enriched with settlement metadata and related notices.",
+                    "description": "Returns strict canonical AO token transfers assigned in the given block. Each transfer may include settled notices, CU-only pending notices, and a compute_error if CU reported execution failure.",
                     "parameters": [
                         {
                             "name": "block_id",
@@ -64,7 +64,7 @@ pub async fn handle_openapi() -> Json<Value> {
                             "schema": {
                                 "type": "string"
                             },
-                            "description": "AO assignment block height."
+                            "description": "AO assignment block height. Transfers are first fetched from the SU inside a padded Arweave timestamp window and then strictly filtered by assignment Block-Height and canonical AO transfer shape."
                         }
                     ],
                     "responses": {
@@ -122,7 +122,7 @@ pub async fn handle_openapi() -> Json<Value> {
             "/v1/token/ao/transfer/{id}": {
                 "get": {
                     "summary": "AO transfer with notices",
-                    "description": "Returns a transfer from SU plus matched credit and debit notices, with GQL fallback for missing notices.",
+                    "description": "Returns one strict canonical AO token transfer from SU plus related notices. Notice resolution order is: SU scan, GQL by correlation, CU result, then GQL by Reference. The response may also include pending_credit_notices, pending_debit_notices, and compute_error.",
                     "parameters": [
                         {
                             "name": "id",
@@ -141,7 +141,7 @@ pub async fn handle_openapi() -> Json<Value> {
                                 "type": "integer",
                                 "minimum": 0
                             },
-                            "description": "Extra forward assignment blocks to scan on the SU before using GQL fallback."
+                            "description": "Extra forward assignment blocks to scan on the SU before fallback resolution. If the requested end block is beyond the current Arweave tip, the SU scan becomes open-ended."
                         }
                     ],
                     "responses": {
