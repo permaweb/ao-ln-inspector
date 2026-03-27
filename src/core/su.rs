@@ -4,7 +4,7 @@ use crate::core::{
     types::{HistoryEdge, HistoryNode, ProcessHistoryResponse},
 };
 use anyhow::{Context, Result, bail};
-use reqwest::{Client, Url};
+use reqwest::Client;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -85,7 +85,7 @@ pub async fn fetch_message_node(
 }
 
 pub async fn probe_process(client: &Client, base_url: &str, process_id: &str) -> Result<()> {
-    let url = process_history_url(base_url, process_id, None, None, None, 1)?;
+    let url = process_history_url(base_url, process_id, None, None, None, 1);
     let response = client.get(url).send().await.context("failed to contact SU")?;
 
     if !response.status().is_success() {
@@ -106,7 +106,7 @@ async fn fetch_message_json<T: DeserializeOwned>(
     process_id: &str,
     message_id: &str,
 ) -> Result<T> {
-    let url = message_url(base_url, process_id, message_id)?;
+    let url = message_url(base_url, process_id, message_id);
     let response = client.get(url).send().await.context("failed to contact SU")?;
 
     if !response.status().is_success() {
@@ -173,7 +173,7 @@ async fn fetch_process_page_optional(
     min_from: Option<i64>,
     page_size: usize,
 ) -> Result<Option<ProcessHistoryResponse>> {
-    let url = process_history_url(base_url, process_id, from, to, min_from, page_size)?;
+    let url = process_history_url(base_url, process_id, from, to, min_from, page_size);
     let response = client.get(url).send().await.context("failed to contact SU")?;
 
     if !response.status().is_success() {
@@ -206,37 +206,30 @@ fn process_history_url(
     to: Option<i64>,
     min_from: Option<i64>,
     page_size: usize,
-) -> Result<Url> {
-    let mut url = Url::parse(&format!("{}/{}", base_url.trim_end_matches('/'), process_id))
-        .context("invalid SU base URL")?;
+) -> String {
+    let mut url = format!(
+        "{}/{}?process-id={process_id}&limit={page_size}",
+        base_url.trim_end_matches('/'),
+        process_id
+    );
 
-    {
-        let mut query = url.query_pairs_mut();
-        query.append_pair("process-id", process_id);
-        query.append_pair("limit", &page_size.to_string());
-        if let Some(from) = from {
-            query.append_pair("from", from);
-        } else if let Some(min_from) = min_from {
-            query.append_pair("from", &min_from.to_string());
-        }
-        if let Some(to) = to {
-            query.append_pair("to", &to.to_string());
-        }
+    if let Some(from) = from {
+        url.push_str("&from=");
+        url.push_str(from);
+    } else if let Some(min_from) = min_from {
+        url.push_str("&from=");
+        url.push_str(&min_from.to_string());
+    }
+    if let Some(to) = to {
+        url.push_str("&to=");
+        url.push_str(&to.to_string());
     }
 
-    Ok(url)
+    url
 }
 
-fn message_url(base_url: &str, process_id: &str, message_id: &str) -> Result<Url> {
-    let mut url = Url::parse(&format!("{}/{}", base_url.trim_end_matches('/'), message_id))
-        .context("invalid SU base URL")?;
-
-    {
-        let mut query = url.query_pairs_mut();
-        query.append_pair("process-id", process_id);
-    }
-
-    Ok(url)
+fn message_url(base_url: &str, process_id: &str, message_id: &str) -> String {
+    format!("{}/{}?process-id={process_id}", base_url.trim_end_matches('/'), message_id)
 }
 
 fn is_missing_su_process_error(message: &str) -> bool {

@@ -7,7 +7,7 @@ use crate::core::{
     types::{HistoryEdge, normalize_block_height},
 };
 use anyhow::{Context, Result, bail};
-use reqwest::{Client, Url};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -191,8 +191,7 @@ pub async fn fetch_arweave_window_optional(
 }
 
 pub async fn fetch_arweave_tip_height(client: &Client, arweave_url: &str) -> Result<u64> {
-    let url = Url::parse(&format!("{}/info", arweave_url.trim_end_matches('/')))
-        .context("invalid Arweave base URL")?;
+    let url = format!("{}/info", arweave_url.trim_end_matches('/'));
     let response = client
         .get(url)
         .send()
@@ -239,7 +238,6 @@ pub async fn fetch_settled_notices_by_correlation(
         return Ok(grouped);
     }
 
-    let url = Url::parse(gql_url).context("invalid GraphQL URL")?;
     let mut seen = HashSet::new();
     let deduped_correlation_ids = correlation_ids
         .iter()
@@ -252,7 +250,7 @@ pub async fn fetch_settled_notices_by_correlation(
 
         loop {
             let envelope = client
-                .post(url.clone())
+                .post(gql_url)
                 .json(&json!({
                     "query": SETTLED_NOTICES_BY_CORRELATION_QUERY,
                     "variables": {
@@ -329,7 +327,6 @@ pub async fn fetch_settled_notices_by_reference(
         return Ok(grouped);
     }
 
-    let url = Url::parse(gql_url).context("invalid GraphQL URL")?;
     let mut seen = HashSet::new();
     let deduped_references = references
         .iter()
@@ -342,7 +339,7 @@ pub async fn fetch_settled_notices_by_reference(
 
         loop {
             let envelope = client
-                .post(url.clone())
+                .post(gql_url)
                 .json(&json!({
                     "query": SETTLED_NOTICES_BY_REFERENCE_QUERY,
                     "variables": {
@@ -436,10 +433,9 @@ async fn fetch_settlement_metadata(
         return Ok(settlement_metadata);
     }
 
-    let url = Url::parse(gql_url).context("invalid GraphQL URL")?;
     for batch in message_ids.chunks(GQL_BATCH_SIZE) {
         let envelope = client
-            .post(url.clone())
+            .post(gql_url)
             .json(&json!({
                 "query": SETTLEMENT_HEIGHTS_QUERY,
                 "variables": {
@@ -481,7 +477,7 @@ async fn fetch_arweave_block(
     arweave_url: &str,
     block_height: u64,
 ) -> Result<ArweaveBlock> {
-    let url = arweave_block_url(arweave_url, block_height)?;
+    let url = arweave_block_url(arweave_url, block_height);
     let response = client
         .get(url)
         .send()
@@ -498,7 +494,7 @@ async fn fetch_arweave_block_optional(
     arweave_url: &str,
     block_height: u64,
 ) -> Result<Option<ArweaveBlock>> {
-    let url = arweave_block_url(arweave_url, block_height)?;
+    let url = arweave_block_url(arweave_url, block_height);
     let response = client.get(url).send().await.context("failed to contact Arweave")?;
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -514,9 +510,8 @@ async fn fetch_arweave_block_optional(
         .context("failed to deserialize Arweave block response")
 }
 
-fn arweave_block_url(arweave_url: &str, block_height: u64) -> Result<Url> {
-    Url::parse(&format!("{}/block/height/{}", arweave_url.trim_end_matches('/'), block_height))
-        .context("invalid Arweave base URL")
+fn arweave_block_url(arweave_url: &str, block_height: u64) -> String {
+    format!("{}/block/height/{block_height}", arweave_url.trim_end_matches('/'))
 }
 
 fn parse_block_height(block_height: &str) -> Result<u64> {

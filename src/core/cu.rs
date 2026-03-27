@@ -1,6 +1,6 @@
 use crate::core::{constants::NETWORK_VERSION, types::Tag};
 use anyhow::{Context, Result};
-use reqwest::{Client, Url};
+use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -59,13 +59,8 @@ pub async fn fetch_transfer_result(
     process_id: &str,
     transfer_id: &str,
 ) -> Result<CuTransferResult> {
-    let url = Url::parse(&format!(
-        "{}/result/{}?process-id={}",
-        cu_url.trim_end_matches('/'),
-        transfer_id,
-        process_id
-    ))
-    .context("invalid CU URL")?;
+    let url =
+        format!("{}/result/{transfer_id}?process-id={process_id}", cu_url.trim_end_matches('/'));
 
     let response = client
         .get(url)
