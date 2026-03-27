@@ -33,6 +33,7 @@ pub struct TokenTransfersResponse {
 pub struct TokenTransferRecord {
     pub correlation_id: String,
     pub transfer: TokenMessageRecord,
+    pub status: TokenTransferStatus,
     pub compute_error: Option<String>,
     pub credit_notices: Vec<TokenMessageRecord>,
     pub debit_notices: Vec<TokenMessageRecord>,
@@ -997,12 +998,15 @@ fn build_token_transfer_record(
         .context("encountered a transfer edge without a message payload")?;
     let message_id = transfer_message.id.clone();
     let correlation_id = notice_correlation_id(transfer_message).to_string();
+    let status_owner = transfer_message.owner.address.clone();
+    let status_amount = transfer_message.tag_value("Quantity").map(str::to_string);
     let transfer_settlement = settlement_for_edge(&edge, transfer_settlement_metadata);
     let notice_matches = notices_by_transfer.get(&message_id).cloned().unwrap_or_default();
 
     Ok(TokenTransferRecord {
         correlation_id,
         transfer: build_token_message_record(edge, transfer_settlement)?,
+        status: build_transfer_status(&notice_matches.status, status_owner, status_amount),
         compute_error: notice_matches.compute_error,
         credit_notices: notice_matches.credit,
         debit_notices: notice_matches.debit,

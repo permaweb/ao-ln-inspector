@@ -55,7 +55,7 @@ pub async fn handle_openapi() -> Json<Value> {
             "/v1/token/ao/transfers/{block_id}": {
                 "get": {
                     "summary": "AO transfers by assignment block",
-                    "description": "Returns strict canonical AO token transfers assigned in the given block. Each transfer may include settled notices, CU-only pending notices, and a compute_error if CU reported execution failure.",
+                    "description": "Returns strict canonical AO token transfers assigned in the given block. Each transfer includes a status block derived from SU ownership and CU-only execution evidence, and may include settled notices, CU-only pending notices, and a compute_error if CU reported execution failure.",
                     "parameters": [
                         {
                             "name": "block_id",
