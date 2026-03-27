@@ -14,6 +14,10 @@ pub struct CuPendingNotices {
 #[derive(Debug, Clone, Default)]
 pub struct CuTransferResult {
     pub error: Option<String>,
+    pub checked: bool,
+    pub has_balances_patch: bool,
+    pub cu_sender: Option<String>,
+    pub cu_receiver: Option<String>,
     pub pending_notices: CuPendingNotices,
 }
 
@@ -77,18 +81,8 @@ pub async fn fetch_transfer_result(
     let mut seen_credit = HashSet::new();
     let mut seen_debit = HashSet::new();
 
-    for message in response.messages {
-        if !message.tag_value("Data-Protocol").is_some_and(|value| value.eq_ignore_ascii_case("ao"))
-        {
-            continue;
-        }
-        if !message
-            .tag_value("Variant")
-            .is_some_and(|value| value.eq_ignore_ascii_case(NETWORK_VERSION))
-        {
-            continue;
-        }
-        if !message.tag_value("Type").is_some_and(|value| value.eq_ignore_ascii_case("Message")) {
+    for message in &response.messages {
+        if !message.is_ao_message() {
             continue;
         }
 
@@ -117,21 +111,63 @@ pub async fn fetch_transfer_result(
         }
     }
 
+    let cu_sender =
+        unique_notice_value(notices.credit.iter().filter_map(|notice| notice.sender.as_deref()));
+    let cu_receiver =
+        unique_notice_value(notices.debit.iter().filter_map(|notice| notice.recipient.as_deref()));
+    let has_balances_patch = response
+        .messages
+        .iter()
+        .any(|message| message.has_balances_patch(cu_sender.as_deref(), cu_receiver.as_deref()));
+
     Ok(CuTransferResult {
         error: response.error.and_then(|error| {
             let trimmed = error.trim();
             if trimmed.is_empty() { None } else { Some(error) }
         }),
+        checked: true,
+        has_balances_patch,
+        cu_sender,
+        cu_receiver,
         pending_notices: notices,
     })
 }
 
 impl CuResultMessage {
+    fn is_ao_message(&self) -> bool {
+        self.tag_value("Data-Protocol").is_some_and(|value| value.eq_ignore_ascii_case("ao"))
+            && self
+                .tag_value("Variant")
+                .is_some_and(|value| value.eq_ignore_ascii_case(NETWORK_VERSION))
+            && self.tag_value("Type").is_some_and(|value| value.eq_ignore_ascii_case("Message"))
+    }
+
+    fn has_balances_patch(&self, cu_sender: Option<&str>, cu_receiver: Option<&str>) -> bool {
+        let Some(cu_sender) = cu_sender else {
+            return false;
+        };
+        let Some(cu_receiver) = cu_receiver else {
+            return false;
+        };
+        let Some(balances) = self.tag_json("balances").and_then(Value::as_object) else {
+            return false;
+        };
+
+        self.is_ao_message()
+            && self
+                .tag_json("device")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case("patch@1.0"))
+            && balances.contains_key(cu_sender)
+            && balances.contains_key(cu_receiver)
+    }
+
     fn tag_value(&self, name: &str) -> Option<&str> {
-        self.tags
-            .iter()
-            .find(|tag| tag.name.eq_ignore_ascii_case(name))
-            .and_then(|tag| tag.value.as_str())
+        self.tag_json(name).and_then(Value::as_str)
+    }
+
+    fn tag_json(&self, name: &str) -> Option<&Value> {
+        self.tags.iter().find(|tag| tag.name.eq_ignore_ascii_case(name)).map(|tag| &tag.value)
     }
 
     fn string_tags(&self) -> Vec<Tag> {
@@ -144,4 +180,9 @@ impl CuResultMessage {
             })
             .collect()
     }
+}
+
+fn unique_notice_value<'a>(mut values: impl Iterator<Item = &'a str>) -> Option<String> {
+    let first = values.find(|value| !value.trim().is_empty())?;
+    if values.all(|value| value == first) { Some(first.to_string()) } else { None }
 }

@@ -122,7 +122,7 @@ pub async fn handle_openapi() -> Json<Value> {
             "/v1/token/ao/transfer/{id}": {
                 "get": {
                     "summary": "AO transfer with notices",
-                    "description": "Returns one strict canonical AO token transfer from SU plus related notices. Notice resolution order is: SU scan, GQL by correlation, CU result, then GQL by Reference. The response may also include pending_credit_notices, pending_debit_notices, and compute_error.",
+                    "description": "Returns one strict canonical AO token transfer from SU plus related notices. Notice resolution order is: SU scan, GQL by correlation, CU result, then GQL by Reference. The response also includes a status block derived from SU inclusion and CU result inspection, and may include pending_credit_notices, pending_debit_notices, and compute_error.",
                     "parameters": [
                         {
                             "name": "id",

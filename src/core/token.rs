@@ -43,11 +43,25 @@ pub struct TokenTransferRecord {
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenTransferWithNoticesResponse {
     pub transfer: HistoryNode,
+    pub status: TokenTransferStatus,
     pub compute_error: Option<String>,
     pub credit_notices: Vec<TokenMessageRecord>,
     pub debit_notices: Vec<TokenMessageRecord>,
     pub pending_credit_notices: Vec<PendingTokenNoticeRecord>,
     pub pending_debit_notices: Vec<PendingTokenNoticeRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenTransferStatus {
+    pub success: bool,
+    pub su_assignment: bool,
+    pub cu_result_checked: bool,
+    pub cu_execution: bool,
+    pub cu_result_has_balances_patch: bool,
+    pub owner: String,
+    pub cu_sender: Option<String>,
+    pub cu_receiver: Option<String>,
+    pub amount: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +101,7 @@ pub struct PendingTokenNoticeRecord {
 #[derive(Debug, Clone, Default)]
 struct TransferNoticeMatches {
     compute_error: Option<String>,
+    status: TransferCuStatus,
     credit: Vec<TokenMessageRecord>,
     debit: Vec<TokenMessageRecord>,
     pending_credit: Vec<PendingTokenNoticeRecord>,
@@ -97,6 +112,15 @@ struct TransferNoticeMatches {
 struct TransferNoticeEdgeMatches {
     credit: Vec<HistoryEdge>,
     debit: Vec<HistoryEdge>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TransferCuStatus {
+    checked: bool,
+    executed: bool,
+    has_balances_patch: bool,
+    cu_sender: Option<String>,
+    cu_receiver: Option<String>,
 }
 
 pub async fn fetch_ao_token_transfers(
@@ -199,6 +223,8 @@ pub async fn fetch_ao_token_transfer_with_notices(
     let from_timestamp_ms = assignment_timestamp_value(&transfer.assignment)
         .unwrap_or(arweave_window.from_timestamp_ms);
     let to_timestamp_ms = end_arweave_window.and_then(|window| window.to_timestamp_ms);
+    let status_owner = transfer_message.owner.address.clone();
+    let status_amount = transfer_message.tag_value("Quantity").map(str::to_string);
 
     let mut credit_notice_nodes = Vec::new();
     let mut debit_notice_nodes = Vec::new();
@@ -279,6 +305,7 @@ pub async fn fetch_ao_token_transfer_with_notices(
 
     Ok(TokenTransferWithNoticesResponse {
         transfer,
+        status: build_transfer_status(&pending_notices.status, status_owner, status_amount),
         compute_error: pending_notices.compute_error,
         credit_notices,
         debit_notices,
@@ -432,9 +459,8 @@ async fn backfill_transfer_notices_from_cu_result(
     debit_notices: &mut Vec<TokenMessageRecord>,
 ) -> TransferNoticeMatches {
     let mut pending_matches = TransferNoticeMatches::default();
-    if !credit_notices.is_empty() && !debit_notices.is_empty() {
-        return pending_matches;
-    }
+    let missing_credit = credit_notices.is_empty();
+    let missing_debit = debit_notices.is_empty();
 
     let cu_result = match cu::fetch_transfer_result(
         client,
@@ -447,18 +473,25 @@ async fn backfill_transfer_notices_from_cu_result(
         Ok(cu_result) => cu_result,
         Err(_) => return pending_matches,
     };
+    pending_matches.status = TransferCuStatus {
+        checked: cu_result.checked,
+        executed: cu_result.error.is_none(),
+        has_balances_patch: cu_result.has_balances_patch,
+        cu_sender: cu_result.cu_sender.clone(),
+        cu_receiver: cu_result.cu_receiver.clone(),
+    };
     pending_matches.compute_error = cu_result.error;
     if pending_matches.compute_error.is_some() {
+        return pending_matches;
+    }
+    if !missing_credit && !missing_debit {
         return pending_matches;
     }
 
     let cu_pending_notices = cu_result.pending_notices;
 
-    let requested_references = collect_missing_notice_references(
-        &cu_pending_notices,
-        credit_notices.is_empty(),
-        debit_notices.is_empty(),
-    );
+    let requested_references =
+        collect_missing_notice_references(&cu_pending_notices, missing_credit, missing_debit);
     let settled_notices = if requested_references.is_empty() {
         HashMap::new()
     } else {
@@ -491,8 +524,8 @@ async fn backfill_transfer_notices_from_cu_result(
         &cu_pending_notices,
         transfer_message.id.as_str(),
         &config.ao_token_process_id,
-        credit_notices.is_empty(),
-        debit_notices.is_empty(),
+        missing_credit,
+        missing_debit,
         &mut pending_matches,
     );
 
@@ -727,19 +760,7 @@ async fn augment_missing_notices_from_cu_result(
     transfer_edges: &[HistoryEdge],
     notices_by_transfer: &mut HashMap<String, TransferNoticeMatches>,
 ) -> Result<()> {
-    let missing_transfers = transfer_edges
-        .iter()
-        .filter_map(|transfer_edge| {
-            let message = transfer_edge.node.message.as_ref()?;
-            let current = notices_by_transfer.get(&message.id).cloned().unwrap_or_default();
-            if !current.credit.is_empty() && !current.debit.is_empty() {
-                return None;
-            }
-            Some(transfer_edge)
-        })
-        .collect::<Vec<_>>();
-
-    for transfer_edge in missing_transfers {
+    for transfer_edge in transfer_edges {
         let Some(transfer_message) = transfer_edge.node.message.as_ref() else {
             continue;
         };
@@ -756,17 +777,26 @@ async fn augment_missing_notices_from_cu_result(
             Err(_) => continue,
         };
         let entry = notices_by_transfer.entry(transfer_message.id.clone()).or_default();
+        entry.status = TransferCuStatus {
+            checked: cu_result.checked,
+            executed: cu_result.error.is_none(),
+            has_balances_patch: cu_result.has_balances_patch,
+            cu_sender: cu_result.cu_sender.clone(),
+            cu_receiver: cu_result.cu_receiver.clone(),
+        };
         entry.compute_error = cu_result.error;
         if entry.compute_error.is_some() {
             continue;
         }
+        let missing_credit = current.credit.is_empty();
+        let missing_debit = current.debit.is_empty();
+        if !missing_credit && !missing_debit {
+            continue;
+        }
         let cu_pending_notices = cu_result.pending_notices;
 
-        let requested_references = collect_missing_notice_references(
-            &cu_pending_notices,
-            current.credit.is_empty(),
-            current.debit.is_empty(),
-        );
+        let requested_references =
+            collect_missing_notice_references(&cu_pending_notices, missing_credit, missing_debit);
         let settled_notices = if requested_references.is_empty() {
             HashMap::new()
         } else {
@@ -794,8 +824,8 @@ async fn augment_missing_notices_from_cu_result(
             &cu_pending_notices,
             transfer_message.id.as_str(),
             &config.ao_token_process_id,
-            entry.credit.is_empty(),
-            entry.debit.is_empty(),
+            missing_credit,
+            missing_debit,
             entry,
         );
     }
@@ -960,14 +990,13 @@ fn build_token_transfer_record(
     transfer_settlement_metadata: &HashMap<String, SettlementMetadata>,
     notices_by_transfer: &HashMap<String, TransferNoticeMatches>,
 ) -> Result<TokenTransferRecord> {
-    let message_id = edge
+    let transfer_message = edge
         .node
         .message
         .as_ref()
-        .map(|message| message.id.clone())
         .context("encountered a transfer edge without a message payload")?;
-    let correlation_id =
-        edge.node.message.as_ref().map(notice_correlation_id).unwrap_or_default().to_string();
+    let message_id = transfer_message.id.clone();
+    let correlation_id = notice_correlation_id(transfer_message).to_string();
     let transfer_settlement = settlement_for_edge(&edge, transfer_settlement_metadata);
     let notice_matches = notices_by_transfer.get(&message_id).cloned().unwrap_or_default();
 
@@ -1148,6 +1177,28 @@ fn build_pending_token_notice_record(
         pushed_for: transfer_id.to_string(),
         data: notice.data.clone(),
         tags: notice.tags.clone(),
+    }
+}
+
+fn build_transfer_status(
+    cu_status: &TransferCuStatus,
+    owner: String,
+    amount: Option<String>,
+) -> TokenTransferStatus {
+    let su_inclusion = true;
+    let success =
+        su_inclusion && cu_status.checked && cu_status.executed && cu_status.has_balances_patch;
+
+    TokenTransferStatus {
+        success,
+        su_assignment: su_inclusion,
+        cu_result_checked: cu_status.checked,
+        cu_execution: cu_status.executed,
+        cu_result_has_balances_patch: cu_status.has_balances_patch,
+        owner,
+        cu_sender: cu_status.cu_sender.clone(),
+        cu_receiver: cu_status.cu_receiver.clone(),
+        amount,
     }
 }
 
